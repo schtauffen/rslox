@@ -1,0 +1,12 @@
+[package]
+name = "rslox"
+version = "0.1.0"
+authors = ["Zach Dahl <zach@grawlix.dev>"]
+edition = "2018"
+
+[lib]
+name = "rslox"
+
+[[bin]]
+name = "rslox"
+path = "src/main.rs"
