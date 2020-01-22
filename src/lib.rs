@@ -1,6 +1,7 @@
 pub mod debug;
 pub mod chunk;
 pub mod compiler;
+pub mod interner;
 pub mod memory;
 pub mod obj;
 pub mod parser;
