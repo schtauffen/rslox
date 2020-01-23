@@ -1,9 +1,11 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::mem::replace;
 use std::ops::Drop;
+use std::rc::Rc;
 
 use crate::chunk::{Chunk, opcode};
 use crate::compiler::Compiler;
+use crate::interner::StringInterner;
 use crate::memory::free_objects;
 use crate::obj::{Obj, ObjValue};
 use crate::value::Value;
@@ -19,6 +21,7 @@ pub struct Vm<'a> {
   stack: Vec<Value<'a>>,
   stack_top: usize,
   objects: Cell<Option<&'a Obj<'a>>>,
+  interner: Rc<RefCell<StringInterner>>,
 }
 
 impl<'a> Drop for Vm<'a> {
@@ -45,6 +48,7 @@ impl<'a> Vm<'a> {
       stack_top: 0,
       stack: vec![Value::default(); DEFAULT_STACK_MAX],
       objects: Cell::new(Option::None),
+      interner: Rc::new(RefCell::new(StringInterner::new())),
     }
   }
 
@@ -96,7 +100,8 @@ impl<'a> Vm<'a> {
 
   pub fn interpret(&mut self, source: String) -> InterpretResult {
     let allocate = |value: ObjValue| self.allocate(value);
-    let compiler = Compiler::new(source, &allocate);
+    let interner = Rc::clone(&self.interner);
+    let compiler = Compiler::new(source, &allocate, interner);
 
     match compiler.compile() {
       Err(_) => InterpretResult::CompileError,
@@ -143,8 +148,14 @@ impl<'a> Vm<'a> {
               ObjValue::String(b) => match self.pop() {
                 Value::Obj(obj1) => match obj1.value {
                   ObjValue::String(a) => {
-                    let string = format!("{}{}", a, b);
-                    self.push(Value::Obj(Obj::new(ObjValue::String(string))));
+                    let symbol = {
+                      let mut interner = self.interner.borrow_mut();
+                      let string_a = interner.resolve(a).unwrap();
+                      let string_b = interner.resolve(b).unwrap();
+                      let string = format!("{}{}", string_a, string_b);
+                      interner.get_or_intern(string)
+                    };
+                    self.push(Value::Obj(Obj::new(ObjValue::String(symbol))));
                   },
                   // _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
                 }

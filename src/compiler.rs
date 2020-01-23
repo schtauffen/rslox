@@ -1,5 +1,8 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use crate::chunk::{opcode, Chunk};
 use crate::debug;
+use crate::interner::StringInterner;
 use crate::obj::{copy_string, Obj, ObjValue};
 use crate::parser::Parser;
 use crate::scanner::TokenKind;
@@ -67,15 +70,20 @@ enum Act {
 
 pub struct Compiler<'a, 'c: 'a> {
   allocate: &'a dyn Fn(ObjValue) -> Obj<'c>,
+  interner: Rc<RefCell<StringInterner>>,
   parser: Parser,
   compiling_chunk: Chunk<'c>,
 }
 
 impl<'a, 'c: 'a> Compiler<'a, 'c> {
-  pub fn new(source: String, allocate: &'a dyn Fn(ObjValue) -> Obj<'c>) -> Self {
+  pub fn new(
+    source: String,
+    allocate: &'a dyn Fn(ObjValue) -> Obj<'c>,
+    interner: Rc<RefCell<StringInterner>>,
+  ) -> Self {
     let compiling_chunk = Chunk::default();
     let parser = Parser::new(source);
-    Self { allocate, parser, compiling_chunk }
+    Self { allocate, interner, parser, compiling_chunk }
   }
 
   pub fn compile(mut self) -> Result<Chunk<'c>, ()> {
@@ -191,8 +199,11 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   }
 
   fn string(&mut self) {
-    let string = copy_string(&self.parser.previous);
-    let obj = (self.allocate)(ObjValue::String(string));
+    let symbol = {
+      let mut interner = self.interner.borrow_mut();
+      interner.get_or_intern(copy_string(&self.parser.previous))
+    };
+    let obj = (self.allocate)(ObjValue::String(symbol));
     let value = Value::Obj(obj);
     self.emit_constant(value);
   }

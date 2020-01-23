@@ -3,6 +3,7 @@ use std::fmt;
 use std::mem::discriminant;
 use crate::scanner::Token;
 use crate::utils::{next_boundary, previous_boundary};
+use crate::interner::Symbol;
 
 #[derive(Debug, Clone)]
 pub struct Obj<'a> {
@@ -12,7 +13,7 @@ pub struct Obj<'a> {
 
 #[derive(Debug, Clone)]
 pub enum ObjValue {
-  String(String),
+  String(Symbol),
 }
 
 impl fmt::Display for Obj<'_> {

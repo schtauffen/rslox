@@ -3,6 +3,7 @@
 
 use std::{
   collections::HashMap,
+  fmt,
   hash::{Hash, Hasher},
   num::NonZeroU32,
   u32,
@@ -31,6 +32,12 @@ impl Sym for Symbol {
 
   fn to_usize(self) -> usize {
     (self.0.get() as usize) - 1
+  }
+}
+
+impl fmt::Display for Symbol {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "Symbol {}", self.0.get())
   }
 }
 
