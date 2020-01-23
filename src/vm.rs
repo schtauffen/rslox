@@ -131,7 +131,9 @@ impl<'a> Vm<'a> {
       {
         print!("          ");
         for slot in &self.stack[0..self.stack_top] {
-          print!("[ {} ]", slot);
+          print!("[ ");
+          slot.print(self.interner.clone());
+          print!(" ]")
         }
         println!("");
         disassemble_instruction(&self.chunk, self.ip);
@@ -195,7 +197,8 @@ impl<'a> Vm<'a> {
         },
 
         opcode::RETURN => {
-          println!("{}", &self.pop());
+          &self.pop().print(self.interner.clone());
+          println!();
           break
         },
         _ => panic!("Expected opcode"),

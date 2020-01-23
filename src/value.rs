@@ -1,6 +1,9 @@
+use std::cell::RefCell;
 use std::fmt;
 use std::mem::discriminant;
-use crate::obj::Obj;
+use std::rc::Rc;
+use crate::interner::StringInterner;
+use crate::obj::{Obj, ObjValue};
 
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
@@ -57,6 +60,20 @@ impl<'a> Value<'a> {
       Value::Nil => true,
       Value::Bool(b) => !b,
       _ => false,
+    }
+  }
+
+  pub fn print(&self, interner: Rc<RefCell<StringInterner>>) {
+    match self {
+      Value::Obj(obj) => match obj.value {
+        ObjValue::String(symbol) => {
+          match interner.borrow().resolve(symbol) {
+            Some(string) => print!("'{}'", string),
+            None => unreachable!("Shouldn't be deleted"),
+          }
+        },
+      },
+      _ => print!("{}", self),
     }
   }
 
