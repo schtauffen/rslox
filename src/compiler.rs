@@ -145,7 +145,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     }
   }
 
-  fn execute_action(&mut self, action: Act) {
+  fn execute_action(&mut self, action: Act, can_assign: bool) {
     match action {
       Act::Binary => self.binary(),
       Act::Grouping => self.grouping(),
@@ -153,7 +153,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       Act::Number => self.number(),
       Act::String => self.string(),
       Act::Unary => self.unary(),
-      Act::Variable => self.variable(),
+      Act::Variable => self.variable(can_assign),
     }
   }
 
@@ -220,13 +220,19 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     Value::Obj(obj)
   }
 
-  fn named_variable(&mut self, token: &Token) {
+  fn named_variable(&mut self, token: &Token, can_assign: bool) {
     let arg = self.identifier_constant(token);
-    self.emit_bytes(opcode::GET_GLOBAL, arg);
+
+    if can_assign && self.parser.match_token(TokenKind::Equal) {
+      self.expression();
+      self.emit_bytes(opcode::SET_GLOBAL, arg);
+    } else {
+      self.emit_bytes(opcode::GET_GLOBAL, arg);
+    }
   }
 
-  fn variable(&mut self) {
-    self.named_variable(&self.parser.previous.clone());
+  fn variable(&mut self, can_assign: bool) {
+    self.named_variable(&self.parser.previous.clone(), can_assign);
   }
 
   fn unary(&mut self) {
@@ -332,8 +338,10 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.parser.advance();
 
     let prefix_fn = ParseRule::get_rule(self.parser.previous.kind.clone()).prefix.clone();
+    let can_assign = precedence <= Precedence::Assignment;
+
     if let Some(action) = prefix_fn {
-      self.execute_action(action)
+      self.execute_action(action, can_assign);
     } else {
       self.parser.error("Expect expression.");
       return;
@@ -342,7 +350,11 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     while precedence <= ParseRule::get_rule(self.parser.current.kind.clone()).precedence {
       self.parser.advance();
       let infix_fn = ParseRule::get_rule(self.parser.previous.kind.clone()).infix.clone().unwrap();
-      self.execute_action(infix_fn)
+      self.execute_action(infix_fn, can_assign);
+    }
+
+    if can_assign && self.parser.match_token(TokenKind::Equal) {
+      self.parser.error("Invalid assignment target.");
     }
   }
 

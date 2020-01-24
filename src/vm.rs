@@ -207,6 +207,19 @@ impl<'a> Vm<'a> {
           self.globals.insert(symbol, self.peek(0).clone());
           self.pop();
         },
+        opcode::SET_GLOBAL => {
+          let value = self.read_constant();
+          let symbol = value.as_obj().get_symbol();
+          match self.globals.insert(symbol, self.peek(0).clone()) {
+            Some(_) => (),
+            None => {
+              self.globals.remove(&symbol);
+              let name = value.get_string(self.interner.clone());
+              let message = format!("Undefined variable '{}'.", name);
+              return self.runtime_error(message.as_ref())
+            }
+          }
+        },
         opcode::GET_GLOBAL => {
           let value = self.read_constant();
           let symbol = value.as_obj().get_symbol();
@@ -215,10 +228,10 @@ impl<'a> Vm<'a> {
               let result = v.clone();
               self.push(result);
             },
-            _ => {
+            None => {
               let name = value.get_string(self.interner.clone());
               let message = format!("Undefined variable '{}'.", name);
-              return self.runtime_error(message.as_ref());
+              return self.runtime_error(message.as_ref())
             }
           }
         },

@@ -26,13 +26,14 @@ pub mod opcode {
   pub const PRINT: u8 = 15;
   pub const DEFINE_GLOBAL: u8 = 16;
   pub const GET_GLOBAL: u8 = 17;
-  pub const RETURN: u8 = 18;
+  pub const SET_GLOBAL: u8 = 18;
+  pub const RETURN: u8 = 19;
 }
 
 #[derive(Debug, Default)]
 pub struct Chunk<'a> {
   pub code: Vec<u8>,
-  pub constants: Vec<Value<'a>>,
+  pub constants: Vec<Value<'a>>, // TODO - hashmap with symbols?
   pub lines: Vec<i32>, // TODO - more efficient lines implementation
 }
 
