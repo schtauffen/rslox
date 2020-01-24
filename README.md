@@ -1,6 +1,6 @@
 # rslox
 
-An implementation of the lox programming language bytecode virtual machine in rust.
+Bytecode virtual machine for the Lox programming language written in Rust.
 
 ## Acknowledgements
 
