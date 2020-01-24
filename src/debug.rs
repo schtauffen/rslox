@@ -63,6 +63,8 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
 
     opcode::DEFINE_GLOBAL =>
       constant_instruction("DEFINE_GLOBAL", chunk, offset),
+    opcode::GET_GLOBAL =>
+      constant_instruction("GET_GLOBAL", chunk, offset),
     opcode::POP =>
       simple_instruction("POP", offset),
     opcode::PRINT =>

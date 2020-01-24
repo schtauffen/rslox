@@ -66,6 +66,7 @@ enum Act {
   Literal,
   Number,
   String,
+  Variable,
 }
 
 pub struct Compiler<'a, 'c: 'a> {
@@ -152,6 +153,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       Act::Number => self.number(),
       Act::String => self.string(),
       Act::Unary => self.unary(),
+      Act::Variable => self.variable(),
     }
   }
 
@@ -216,6 +218,15 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     let obj = (self.allocate)(ObjValue::String(symbol));
 
     Value::Obj(obj)
+  }
+
+  fn named_variable(&mut self, token: &Token) {
+    let arg = self.identifier_constant(token);
+    self.emit_bytes(opcode::GET_GLOBAL, arg);
+  }
+
+  fn variable(&mut self) {
+    self.named_variable(&self.parser.previous.clone());
   }
 
   fn unary(&mut self) {
@@ -361,7 +372,7 @@ const RULES_TABLE: [ParseRule; 40] = [
   ParseRule::new(None, Some(Act::Binary), Precedence::Comparison),// GreaterEqual
   ParseRule::new(None, Some(Act::Binary), Precedence::Comparison),// Less
   ParseRule::new(None, Some(Act::Binary), Precedence::Comparison),// LessEqual
-  ParseRule::new(None, None, Precedence::None),                 // Identifier
+  ParseRule::new(Some(Act::Variable), None, Precedence::None),  // Identifier
   ParseRule::new(Some(Act::String), None, Precedence::None),    // String
   ParseRule::new(Some(Act::Number), None, Precedence::None),    // Number
   ParseRule::new(None, None, Precedence::None),                 // And

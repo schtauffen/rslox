@@ -134,9 +134,8 @@ impl<'a> Vm<'a> {
       {
         print!("          ");
         for slot in &self.stack[0..self.stack_top] {
-          print!("[ ");
-          slot.print(self.interner.clone());
-          print!(" ]")
+          let string = slot.get_string(self.interner.clone());
+          print!("[ {} ]", string);
         }
         println!("");
         disassemble_instruction(&self.chunk, self.ip);
@@ -208,9 +207,25 @@ impl<'a> Vm<'a> {
           self.globals.insert(symbol, self.peek(0).clone());
           self.pop();
         },
+        opcode::GET_GLOBAL => {
+          let value = self.read_constant();
+          let symbol = value.as_obj().get_symbol();
+          match self.globals.get(&symbol) {
+            Some(v) => {
+              let result = v.clone();
+              self.push(result);
+            },
+            _ => {
+              let name = value.get_string(self.interner.clone());
+              let message = format!("Undefined variable '{}'.", name);
+              return self.runtime_error(message.as_ref());
+            }
+          }
+        },
         opcode::PRINT => {
-          &self.pop().print(self.interner.clone());
-          println!();
+          let value = self.pop();
+          let message = value.get_string(self.interner.clone());
+          println!("{}", message);
         },
         opcode::RETURN => break,
         _ => panic!("Expected opcode"),

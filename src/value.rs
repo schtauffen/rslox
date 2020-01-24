@@ -63,17 +63,18 @@ impl<'a> Value<'a> {
     }
   }
 
-  pub fn print(&self, interner: Rc<RefCell<StringInterner>>) {
+  // TODO - belong here or on Obj?
+  pub fn get_string(&self, interner: Rc<RefCell<StringInterner>>) -> String {
     match self {
       Value::Obj(obj) => match obj.value {
         ObjValue::String(symbol) => {
           match interner.borrow().resolve(symbol) {
-            Some(string) => print!("\"{}\"", string),
-            None => unreachable!("Shouldn't be deleted"),
+            Some(string) => format!("{}", string),
+            None => unreachable!("Expected string"),
           }
         },
       },
-      _ => print!("{}", self),
+      _ => format!("{}", self),
     }
   }
 

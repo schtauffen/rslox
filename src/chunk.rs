@@ -25,7 +25,8 @@ pub mod opcode {
   pub const POP: u8 = 14;
   pub const PRINT: u8 = 15;
   pub const DEFINE_GLOBAL: u8 = 16;
-  pub const RETURN: u8 = 17;
+  pub const GET_GLOBAL: u8 = 17;
+  pub const RETURN: u8 = 18;
 }
 
 #[derive(Debug, Default)]
