@@ -42,6 +42,12 @@ impl Obj<'_> {
   pub fn new(value: ObjValue) -> Self {
     Self { next: Cell::new(Option::None), value }
   }
+
+  pub fn get_symbol(&self) -> Symbol {
+    match self.value {
+      ObjValue::String(symbol) => symbol,
+    }
+  }
 }
 
 pub fn copy_string(token: &Token) -> String {

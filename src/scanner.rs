@@ -63,7 +63,7 @@ pub enum TokenKind {
   While,
 
   Error,
-  EOF
+  EOF,
 }
 
 pub struct Scanner {

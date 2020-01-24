@@ -5,7 +5,7 @@ use crate::debug;
 use crate::interner::StringInterner;
 use crate::obj::{copy_string, Obj, ObjValue};
 use crate::parser::Parser;
-use crate::scanner::TokenKind;
+use crate::scanner::{Token, TokenKind};
 use crate::value::Value;
 
 #[derive(PartialEq, PartialOrd)]
@@ -88,8 +88,10 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
 
   pub fn compile(mut self) -> Result<Chunk<'c>, ()> {
     self.parser.advance();
-    self.expression();
-    self.parser.consume(TokenKind::EOF, "Expected end of expression.");
+
+    while !self.parser.match_token(TokenKind::EOF) {
+      self.declaration();
+    }
 
     self.end_compiler();
     if self.parser.had_error {
@@ -199,13 +201,21 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   }
 
   fn string(&mut self) {
+    let string = copy_string(&self.parser.previous.clone());
+    let value = self.string_object(string);
+    self.emit_constant(value);
+  }
+
+  fn string_object<T>(&mut self, string: T) -> Value<'c>
+  where T: Into<String> + AsRef<str> {
     let symbol = {
       let mut interner = self.interner.borrow_mut();
-      interner.get_or_intern(copy_string(&self.parser.previous))
+      interner.get_or_intern(string)
     };
+
     let obj = (self.allocate)(ObjValue::String(symbol));
-    let value = Value::Obj(obj);
-    self.emit_constant(value);
+
+    Value::Obj(obj)
   }
 
   fn unary(&mut self) {
@@ -217,6 +227,93 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       TokenKind::Bang => self.emit_byte(opcode::NOT),
       TokenKind::Minus => self.emit_byte(opcode::NEGATE),
       _ => unreachable!()
+    }
+  }
+
+  fn expression(&mut self) {
+    self.parse_precedence(Precedence::Assignment);
+  }
+
+  fn parse_variable(&mut self, error_message: &str) -> u8 {
+    self.parser.consume(TokenKind::Identifier, error_message);
+    self.identifier_constant(&self.parser.previous.clone())
+  }
+
+  fn define_variable(&mut self, global: u8) {
+    self.emit_bytes(opcode::DEFINE_GLOBAL, global);
+  }
+
+  fn identifier_constant(&mut self, token: &Token) -> u8 {
+    let value = self.string_object(&token.lexeme);
+    self.make_constant(value)
+  }
+
+  fn var_declaration(&mut self) {
+    let global = self.parse_variable("Expect variable name.");
+
+    if self.parser.match_token(TokenKind::Equal) {
+      self.expression();
+    } else {
+      self.emit_byte(opcode::NIL);
+    }
+    self.parser.consume(TokenKind::Semicolon, "Expect ';' after variable declaration.");
+
+    self.define_variable(global);
+  }
+
+  fn expression_statement(&mut self) {
+    self.expression();
+    self.parser.consume(TokenKind::Semicolon, "Expect ';' after expression.");
+    self.emit_byte(opcode::POP);
+  }
+
+  fn print_statement(&mut self) {
+    self.expression();
+    self.parser.consume(TokenKind::Semicolon, "Expect ';' after value.");
+    self.emit_byte(opcode::PRINT);
+  }
+
+  fn synchronize(&mut self) {
+    self.parser.panic_mode = false;
+
+    while self.parser.current.kind != TokenKind::EOF {
+      if self.parser.previous.kind == TokenKind::Semicolon {
+        return;
+      }
+
+      match self.parser.current.kind {
+        TokenKind::Class => return,
+        TokenKind::Fun => return,
+        TokenKind::Var => return,
+        TokenKind::For => return,
+        TokenKind::If => return,
+        TokenKind::While => return,
+        TokenKind::Print => return,
+        TokenKind::Return => return,
+        _ => (),
+      }
+
+      self.parser.advance();
+    }
+  }
+
+  fn declaration(&mut self) {
+    if self.parser.match_token(TokenKind::Var) {
+      self.var_declaration();
+    } else {
+      self.statement();
+    }
+
+    if self.parser.panic_mode {
+      self.synchronize();
+    }
+  }
+
+  fn statement(&mut self) {
+    if self.parser.match_token(TokenKind::Print) {
+      self.print_statement();
+    } else {
+      self.expression_statement();
     }
   }
 
@@ -236,10 +333,6 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       let infix_fn = ParseRule::get_rule(self.parser.previous.kind.clone()).infix.clone().unwrap();
       self.execute_action(infix_fn)
     }
-  }
-
-  fn expression(&mut self) {
-    self.parse_precedence(Precedence::Assignment);
   }
 
   fn current_chunk(&mut self) -> &mut Chunk<'c> {

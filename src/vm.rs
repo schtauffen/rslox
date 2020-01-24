@@ -1,11 +1,12 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::mem::replace;
 use std::ops::Drop;
 use std::rc::Rc;
 
 use crate::chunk::{Chunk, opcode};
 use crate::compiler::Compiler;
-use crate::interner::StringInterner;
+use crate::interner::{Symbol, StringInterner};
 use crate::memory::free_objects;
 use crate::obj::{Obj, ObjValue};
 use crate::value::Value;
@@ -21,6 +22,7 @@ pub struct Vm<'a> {
   stack: Vec<Value<'a>>,
   stack_top: usize,
   objects: Cell<Option<&'a Obj<'a>>>,
+  globals: HashMap<Symbol, Value<'a>>,
   interner: Rc<RefCell<StringInterner>>,
 }
 
@@ -48,6 +50,7 @@ impl<'a> Vm<'a> {
       stack_top: 0,
       stack: vec![Value::default(); DEFAULT_STACK_MAX],
       objects: Cell::new(Option::None),
+      globals: HashMap::new(),
       interner: Rc::new(RefCell::new(StringInterner::new())),
     }
   }
@@ -62,9 +65,9 @@ impl<'a> Vm<'a> {
     replace(&mut self.stack[self.stack_top], Value::Nil)
   }
 
-  // fn peek(&self, distance: usize) -> &Value<'a> {
-  //   &self.stack[self.stack_top - (distance + 1)]
-  // }
+  fn peek(&self, distance: usize) -> &Value<'a> {
+    &self.stack[self.stack_top - (distance + 1)]
+  }
 
   fn read_byte(&mut self) -> u8 {
     let byte = self.chunk.code[self.ip];
@@ -196,11 +199,20 @@ impl<'a> Vm<'a> {
           self.push(Value::Bool(value));
         },
 
-        opcode::RETURN => {
+        opcode::POP => {
+          self.pop();
+        },
+        opcode::DEFINE_GLOBAL => {
+          let value = self.read_constant();
+          let symbol = value.as_obj().get_symbol();
+          self.globals.insert(symbol, self.peek(0).clone());
+          self.pop();
+        },
+        opcode::PRINT => {
           &self.pop().print(self.interner.clone());
           println!();
-          break
         },
+        opcode::RETURN => break,
         _ => panic!("Expected opcode"),
       }
     }

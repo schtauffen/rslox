@@ -22,7 +22,10 @@ pub mod opcode {
   pub const NEGATE: u8 = 12;
   pub const NOT: u8 = 13;
 
-  pub const RETURN: u8 = 14;
+  pub const POP: u8 = 14;
+  pub const PRINT: u8 = 15;
+  pub const DEFINE_GLOBAL: u8 = 16;
+  pub const RETURN: u8 = 17;
 }
 
 #[derive(Debug, Default)]

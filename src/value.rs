@@ -68,7 +68,7 @@ impl<'a> Value<'a> {
       Value::Obj(obj) => match obj.value {
         ObjValue::String(symbol) => {
           match interner.borrow().resolve(symbol) {
-            Some(string) => print!("'{}'", string),
+            Some(string) => print!("\"{}\"", string),
             None => unreachable!("Shouldn't be deleted"),
           }
         },
@@ -77,6 +77,12 @@ impl<'a> Value<'a> {
     }
   }
 
+  pub fn as_obj(&self) -> &Obj<'a> {
+    match self {
+      Value::Obj(value) => &value,
+      _ => panic!("Expected obj."),
+    }
+  }
   // TODO - ?
   // to_int
   // to_bool

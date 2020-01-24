@@ -33,12 +33,26 @@ impl Parser {
   }
 
   pub fn consume(&mut self, kind: TokenKind, message: &str) {
-    if self.current.kind == kind {
+    if self.check(kind) {
       self.advance();
       return;
     }
 
     self.error_at_current(message);
+  }
+
+  fn check (&self, kind: TokenKind) -> bool {
+    self.current.kind == kind
+  }
+
+  pub fn match_token(&mut self, kind: TokenKind) -> bool {
+    if !self.check(kind) {
+      return false
+    }
+
+    self.advance();
+
+    true
   }
 
   pub fn error(&mut self, message: &str) {
