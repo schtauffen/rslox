@@ -3,7 +3,7 @@ use crate::utils::{next_boundary, previous_boundary};
 #[derive(Clone)]
 pub struct Token {
   pub kind: TokenKind,
-  pub lexeme: String,
+  pub lexeme: String, // TODO - &str pointer of source ?
   pub line: i32,
 }
 

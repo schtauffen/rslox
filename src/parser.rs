@@ -41,7 +41,7 @@ impl Parser {
     self.error_at_current(message);
   }
 
-  fn check (&self, kind: TokenKind) -> bool {
+  pub fn check (&self, kind: TokenKind) -> bool {
     self.current.kind == kind
   }
 

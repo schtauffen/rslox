@@ -69,11 +69,24 @@ enum Act {
   Variable,
 }
 
+struct Local {
+  name: Token,
+  depth: i16,
+}
+
+impl Local {
+  pub fn new(name: Token, depth: i16) -> Self {
+    Self { name, depth }
+  }
+}
+
 pub struct Compiler<'a, 'c: 'a> {
   allocate: &'a dyn Fn(ObjValue) -> Obj<'c>,
   interner: Rc<RefCell<StringInterner>>,
   parser: Parser,
   compiling_chunk: Chunk<'c>,
+  locals: Vec<Local>,
+  scope_depth: i16,
 }
 
 impl<'a, 'c: 'a> Compiler<'a, 'c> {
@@ -82,9 +95,14 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     allocate: &'a dyn Fn(ObjValue) -> Obj<'c>,
     interner: Rc<RefCell<StringInterner>>,
   ) -> Self {
-    let compiling_chunk = Chunk::default();
-    let parser = Parser::new(source);
-    Self { allocate, interner, parser, compiling_chunk }
+    Self {
+      allocate,
+      interner,
+      parser: Parser::new(source),
+      compiling_chunk: Chunk::default(),
+      locals: Vec::new(),
+      scope_depth: 0,
+    }
   }
 
   pub fn compile(mut self) -> Result<Chunk<'c>, ()> {
@@ -142,6 +160,23 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       if !self.parser.had_error {
         debug::disassemble_chunk(self.current_chunk(), "code");
       }
+    }
+  }
+
+  fn begin_scope(&mut self) {
+    self.scope_depth += 1;
+  }
+
+  fn end_scope(&mut self) {
+    self.scope_depth -= 1;
+
+    while let Some(local) = self.locals.last() {
+      if local.depth <= self.scope_depth {
+        break
+      }
+
+      self.emit_byte(opcode::POP);
+      self.locals.pop();
     }
   }
 
@@ -253,10 +288,52 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
 
   fn parse_variable(&mut self, error_message: &str) -> u8 {
     self.parser.consume(TokenKind::Identifier, error_message);
+
+    self.declare_variable();
+    if self.scope_depth > 0 {
+      return 0
+    }
+
     self.identifier_constant(&self.parser.previous.clone())
   }
 
+  fn add_local(&mut self, name: Token) {
+    if self.locals.len() > std::u8::MAX as usize {
+      self.parser.error("Too many local variables in function.");
+      return
+    }
+
+    let local = Local::new(name, self.scope_depth.clone());
+    self.locals.push(local);
+  }
+
+  fn declare_variable(&mut self) {
+    if self.scope_depth == 0 {
+      return
+    }
+
+    let name = self.parser.previous.clone();
+
+    for local in self.locals.iter().rev() {
+      if local.depth != -1 && local.depth < self.scope_depth {
+        break;
+      }
+
+      if name.lexeme == local.name.lexeme {
+        self
+          .parser
+          .error("Variable with this name already declared in this scope.");
+      }
+    }
+
+    self.add_local(name);
+  }
+
   fn define_variable(&mut self, global: u8) {
+    if self.scope_depth > 0 {
+      return
+    }
+
     self.emit_bytes(opcode::DEFINE_GLOBAL, global);
   }
 
@@ -326,9 +403,24 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     }
   }
 
+  fn block (&mut self) {
+    while
+      !self.parser.check(TokenKind::RightBrace) &&
+      !self.parser.check(TokenKind::EOF)
+    {
+      self.declaration();
+    }
+
+    self.parser.consume(TokenKind::RightBrace, "Expect '}' after block.");
+  }
+
   fn statement(&mut self) {
     if self.parser.match_token(TokenKind::Print) {
       self.print_statement();
+    } else if self.parser.match_token(TokenKind::LeftBrace) {
+      self.begin_scope();
+      self.block();
+      self.end_scope();
     } else {
       self.expression_statement();
     }
