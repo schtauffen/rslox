@@ -60,11 +60,13 @@ impl ParseRule {
 
 #[derive(Clone)]
 enum Act {
+  And,
   Binary,
   Grouping,
   Unary,
   Literal,
   Number,
+  Or,
   String,
   Variable,
 }
@@ -206,10 +208,12 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
 
   fn execute_action(&mut self, action: Act, can_assign: bool) {
     match action {
+      Act::And => self.and(),
       Act::Binary => self.binary(),
       Act::Grouping => self.grouping(),
       Act::Literal => self.literal(),
       Act::Number => self.number(),
+      Act::Or => self.or(),
       Act::String => self.string(),
       Act::Unary => self.unary(),
       Act::Variable => self.variable(can_assign),
@@ -259,6 +263,17 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       .expect("Unable to parse float");
 
     self.emit_constant(Value::Number(value));
+  }
+
+  fn or(&mut self) { // TODO - JumpIfTrue would make this as fast as 'and'
+    let else_jump = self.emit_jump(Op::JumpIfFalse);
+    let end_jump = self.emit_jump(Op::Jump);
+
+    self.patch_jump(else_jump);
+    self.emit_byte(Op::Pop);
+
+    self.parse_precedence(Precedence::Or);
+    self.patch_jump(end_jump);
   }
 
   fn string(&mut self) {
@@ -396,6 +411,15 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     }
 
     self.emit_bytes(Op::DefineGlobal, global);
+  }
+
+  fn and(&mut self) {
+    let end_jump = self.emit_jump(Op::JumpIfFalse);
+
+    self.emit_byte(Op::Pop);
+    self.parse_precedence(Precedence::And);
+
+    self.patch_jump(end_jump);
   }
 
   fn identifier_constant(&mut self, token: &Token) -> u8 {
@@ -561,7 +585,7 @@ const RULES_TABLE: [ParseRule; 40] = [
   ParseRule::new(Some(Act::Variable), None, Precedence::None),  // Identifier
   ParseRule::new(Some(Act::String), None, Precedence::None),    // String
   ParseRule::new(Some(Act::Number), None, Precedence::None),    // Number
-  ParseRule::new(None, None, Precedence::None),                 // And
+  ParseRule::new(None, Some(Act::And), Precedence::And),        // And
   ParseRule::new(None, None, Precedence::None),                 // Class
   ParseRule::new(None, None, Precedence::None),                 // Else
   ParseRule::new(Some(Act::Literal), None, Precedence::None),   // False
@@ -569,7 +593,7 @@ const RULES_TABLE: [ParseRule; 40] = [
   ParseRule::new(None, None, Precedence::None),                 // Fun
   ParseRule::new(None, None, Precedence::None),                 // If
   ParseRule::new(Some(Act::Literal), None, Precedence::None),   // Nil
-  ParseRule::new(None, None, Precedence::None),                 // Or
+  ParseRule::new(None, Some(Act::Or), Precedence::Or),          // Or
   ParseRule::new(None, None, Precedence::None),                 // Print
   ParseRule::new(None, None, Precedence::None),                 // Return
   ParseRule::new(None, None, Precedence::None),                 // Super
