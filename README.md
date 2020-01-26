@@ -4,7 +4,7 @@ Bytecode virtual machine for the Lox programming language written in Rust.
 
 ## Development
 While developing, if you would like auto-running check and tests you can install cargo-watch and then run `./scripts/tdd`.  
-You can then also have an auto-restarting rslox repl by opening a second terminal and then run `./scripts/repl`.  
+You can then also have an auto-restarting rslox repl by opening a second terminal and running `./scripts/repl`.  
 
 ## Acknowledgements
 
