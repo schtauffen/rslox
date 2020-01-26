@@ -1,7 +1,7 @@
 use std::{fmt, mem};
 use crate::value::Value;
 
-const OP_MAX: u8 = 23;
+const OP_MAX: u8 = 24;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,15 +27,17 @@ pub enum Op {
   Negate,
   Not,
 
-  Pop,
-  Print,
+  DefineGlobal,
   Jump,
   JumpIfFalse,
-  DefineGlobal,
-  SetGlobal,
   GetGlobal,
-  SetLocal,
   GetLocal,
+  Loop,
+  Pop,
+  Print,
+  SetGlobal,
+  SetLocal,
+
   Return,
 }
 

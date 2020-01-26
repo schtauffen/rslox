@@ -134,6 +134,19 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.emit_byte(byte2);
   }
 
+  fn emit_loop(&mut self, loop_start: usize) {
+    self.emit_byte(Op::Loop);
+
+    let offset = self.current_chunk().code.len() - loop_start + 2;
+    if offset > std::u16::MAX as usize {
+      self.parser.error("Loop body too large.");
+    }
+
+    // TODO : helper of u16 -> (u8, u8) && (u8, u8) -> u16 
+    self.emit_byte((offset >> 8) as u8);
+    self.emit_byte(offset as u8);
+  }
+
   fn emit_jump(&mut self, op: Op) -> usize { // TODO - JUMP vs LONG_JUMP?
     self.emit_byte(op);
     self.emit_byte(0u8);
@@ -471,6 +484,24 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.emit_byte(Op::Print);
   }
 
+  fn while_statement(&mut self) {
+    let loop_start = self.current_chunk().code.len();
+
+    self.parser.consume(TokenKind::LeftParen, "Expect '(' after 'while'.");
+    self.expression();
+    self.parser.consume(TokenKind::RightParen, "Expect ')' after condition.");
+
+    let exit_jump = self.emit_jump(Op::JumpIfFalse);
+
+    self.emit_byte(Op::Pop);
+    self.statement();
+
+    self.emit_loop(loop_start);
+
+    self.patch_jump(exit_jump);
+    self.emit_byte(Op::Pop);
+  }
+
   fn synchronize(&mut self) {
     self.parser.panic_mode = false;
 
@@ -523,6 +554,8 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       self.print_statement();
     } else if self.parser.match_token(TokenKind::If) {
       self.if_statement();
+    } else if self.parser.match_token(TokenKind::While) {
+      self.while_statement();
     } else if self.parser.match_token(TokenKind::LeftBrace) {
       self.begin_scope();
       self.block();

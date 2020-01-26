@@ -260,6 +260,10 @@ impl<'a> Vm<'a> {
           let slot = self.read_byte();
           self.push(self.stack[slot as usize].clone());
         },
+        Op::Loop => {
+          let offset = self.read_short() as usize;
+          self.ip -= offset;
+        },
         Op::Print => {
           let value = self.pop();
           let message = value.get_string(self.interner.clone());

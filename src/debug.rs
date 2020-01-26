@@ -68,6 +68,8 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
       jump_instruction("JUMP", 1, chunk, offset),
     Op::JumpIfFalse =>
       jump_instruction("JUMP_IF_FALSE", 1, chunk, offset),
+    Op::Loop =>
+      jump_instruction("LOOP", -1, chunk, offset),
     Op::DefineGlobal =>
       constant_instruction("DEFINE_GLOBAL", chunk, offset),
     Op::SetGlobal =>
