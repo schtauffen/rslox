@@ -71,11 +71,11 @@ enum Act {
 
 struct Local {
   name: Token,
-  depth: i16,
+  depth: Option<u16>,
 }
 
 impl Local {
-  pub fn new(name: Token, depth: i16) -> Self {
+  pub fn new(name: Token, depth: Option<u16>) -> Self {
     Self { name, depth }
   }
 }
@@ -85,8 +85,8 @@ pub struct Compiler<'a, 'c: 'a> {
   interner: Rc<RefCell<StringInterner>>,
   parser: Parser,
   compiling_chunk: Chunk<'c>,
-  locals: Vec<Local>,
-  scope_depth: i16,
+  locals: Vec<Local>, // TODO - allow more locals
+  scope_depth: u16,
 }
 
 impl<'a, 'c: 'a> Compiler<'a, 'c> {
@@ -171,8 +171,11 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.scope_depth -= 1;
 
     while let Some(local) = self.locals.last() {
-      if local.depth <= self.scope_depth {
-        break
+      match local.depth {
+        Some(depth) => if depth <= self.scope_depth  {
+          break;
+        },
+        None => unreachable!("Local depths should be defined."),
       }
 
       self.emit_byte(opcode::POP);
@@ -255,14 +258,40 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     Value::Obj(obj)
   }
 
+  fn resolve_local(&mut self, token: &Token) -> Option<u8> {
+    for (index, local) in self.locals.iter().rev().enumerate() {
+      if token.lexeme == local.name.lexeme {
+        match local.depth {
+          Some(_) => return Some(index as u8),
+          None => self
+            .parser
+            .error("Cannot read local variable in its own initializer."),
+        }
+      } 
+    }
+
+    None
+  }
+
   fn named_variable(&mut self, token: &Token, can_assign: bool) {
-    let arg = self.identifier_constant(token);
+   let (get_op, set_op, arg) = match self.resolve_local(&token) {
+      Some(local) => (
+        opcode::GET_LOCAL,
+        opcode::SET_LOCAL,
+        local
+      ),
+      None => (
+        opcode::GET_GLOBAL,
+        opcode::SET_GLOBAL,
+        self.identifier_constant(&token)
+      ),
+    };
 
     if can_assign && self.parser.match_token(TokenKind::Equal) {
       self.expression();
-      self.emit_bytes(opcode::SET_GLOBAL, arg);
+      self.emit_bytes(set_op, arg);
     } else {
-      self.emit_bytes(opcode::GET_GLOBAL, arg);
+      self.emit_bytes(get_op, arg);
     }
   }
 
@@ -297,13 +326,20 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.identifier_constant(&self.parser.previous.clone())
   }
 
+  fn mark_initialized(&mut self) {
+    // TODO - need to hold reference for GC?
+    let mut local = self.locals.pop().unwrap();
+    local.depth = Some(self.scope_depth);
+    self.locals.push(local);
+  }
+
   fn add_local(&mut self, name: Token) {
     if self.locals.len() > std::u8::MAX as usize {
       self.parser.error("Too many local variables in function.");
       return
     }
 
-    let local = Local::new(name, self.scope_depth.clone());
+    let local = Local::new(name, None);
     self.locals.push(local);
   }
 
@@ -315,8 +351,11 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     let name = self.parser.previous.clone();
 
     for local in self.locals.iter().rev() {
-      if local.depth != -1 && local.depth < self.scope_depth {
-        break;
+      match local.depth {
+        Some(depth) => if depth < self.scope_depth {
+          break;
+        },
+        None => (),
       }
 
       if name.lexeme == local.name.lexeme {
@@ -331,6 +370,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
 
   fn define_variable(&mut self, global: u8) {
     if self.scope_depth > 0 {
+      self.mark_initialized();
       return
     }
 

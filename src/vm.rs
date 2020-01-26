@@ -235,6 +235,14 @@ impl<'a> Vm<'a> {
             }
           }
         },
+        opcode::SET_LOCAL => {
+          let slot = self.read_byte();
+          self.stack[slot as usize] = self.peek(0).clone();
+        },
+        opcode::GET_LOCAL => {
+          let slot = self.read_byte();
+          self.push(self.stack[slot as usize].clone());
+        },
         opcode::PRINT => {
           let value = self.pop();
           let message = value.get_string(self.interner.clone());

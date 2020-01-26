@@ -1,6 +1,6 @@
 use crate::value::Value;
 
-pub mod opcode {
+pub mod opcode { // TODO - use enum and T: Into<u8>
   // pub const ILLEGAL: u8 = 0;
 
   // Literals
@@ -27,7 +27,9 @@ pub mod opcode {
   pub const DEFINE_GLOBAL: u8 = 16;
   pub const GET_GLOBAL: u8 = 17;
   pub const SET_GLOBAL: u8 = 18;
-  pub const RETURN: u8 = 19;
+  pub const GET_LOCAL: u8 = 19;
+  pub const SET_LOCAL: u8 = 20;
+  pub const RETURN: u8 = 21;
 }
 
 #[derive(Debug, Default)]
