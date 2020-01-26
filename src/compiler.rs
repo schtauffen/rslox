@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use crate::chunk::{opcode, Chunk};
+use crate::chunk::{Op, Chunk};
 use crate::debug;
 use crate::interner::StringInterner;
 use crate::obj::{copy_string, Obj, ObjValue};
@@ -120,18 +120,20 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     }
   }
 
-  fn emit_byte(&mut self, byte: u8) {
+  fn emit_byte<T>(&mut self, byte: T)
+  where T: Into<u8> {
     let line = self.parser.previous.line; // current?
     self.current_chunk().write(byte, line);
   }
 
-  fn emit_bytes(&mut self, byte1: u8, byte2: u8) {
+  fn emit_bytes<T, U>(&mut self, byte1: T, byte2: U)
+  where T: Into<u8>, U: Into<u8> {
     self.emit_byte(byte1);
     self.emit_byte(byte2);
   }
 
   fn emit_return(&mut self) {
-    self.emit_byte(opcode::RETURN);
+    self.emit_byte(Op::Return);
   }
 
   fn make_constant(&mut self, value: Value<'c>) -> u8 {
@@ -149,7 +151,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
 
   fn emit_constant(&mut self, value: Value<'c>) {
     let constant = self.make_constant(value);
-    self.emit_bytes(opcode::CONSTANT, constant);
+    self.emit_bytes(Op::Constant, constant);
   }
 
   fn end_compiler(&mut self) {
@@ -178,7 +180,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
         None => unreachable!("Local depths should be defined."),
       }
 
-      self.emit_byte(opcode::POP);
+      self.emit_byte(Op::Pop);
       self.locals.pop();
     }
   }
@@ -201,25 +203,25 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.parse_precedence(precedence);
 
     match kind {
-      TokenKind::BangEqual => self.emit_bytes(opcode::EQUAL, opcode::NOT),
-      TokenKind::EqualEqual => self.emit_byte(opcode::EQUAL),
-      TokenKind::Greater => self.emit_byte(opcode::GREATER),
-      TokenKind::GreaterEqual => self.emit_bytes(opcode::LESS, opcode::NOT),
-      TokenKind::Less => self.emit_byte(opcode::LESS),
-      TokenKind::LessEqual => self.emit_bytes(opcode::GREATER, opcode::NOT),
-      TokenKind::Plus => self.emit_byte(opcode::ADD),
-      TokenKind::Minus => self.emit_byte(opcode::SUBTRACT),
-      TokenKind::Star => self.emit_byte(opcode::MULTIPLY),
-      TokenKind::Slash => self.emit_byte(opcode::DIVIDE),
+      TokenKind::BangEqual => self.emit_bytes(Op::Equal, Op::Not),
+      TokenKind::EqualEqual => self.emit_byte(Op::Equal),
+      TokenKind::Greater => self.emit_byte(Op::Greater),
+      TokenKind::GreaterEqual => self.emit_bytes(Op::Less, Op::Not),
+      TokenKind::Less => self.emit_byte(Op::Less),
+      TokenKind::LessEqual => self.emit_bytes(Op::Greater, Op::Not),
+      TokenKind::Plus => self.emit_byte(Op::Add),
+      TokenKind::Minus => self.emit_byte(Op::Subtract),
+      TokenKind::Star => self.emit_byte(Op::Multiply),
+      TokenKind::Slash => self.emit_byte(Op::Divide),
       _ => unreachable!(),
     }
   }
 
   fn literal(&mut self) {
     match self.parser.previous.kind {
-      TokenKind::False => self.emit_byte(opcode::FALSE),
-      TokenKind::Nil => self.emit_byte(opcode::NIL),
-      TokenKind::True => self.emit_byte(opcode::TRUE),
+      TokenKind::False => self.emit_byte(Op::False),
+      TokenKind::Nil => self.emit_byte(Op::Nil),
+      TokenKind::True => self.emit_byte(Op::True),
       _ => unreachable!(),
     }
   }
@@ -276,13 +278,13 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   fn named_variable(&mut self, token: &Token, can_assign: bool) {
    let (get_op, set_op, arg) = match self.resolve_local(&token) {
       Some(local) => (
-        opcode::GET_LOCAL,
-        opcode::SET_LOCAL,
+        Op::GetLocal,
+        Op::SetLocal,
         local
       ),
       None => (
-        opcode::GET_GLOBAL,
-        opcode::SET_GLOBAL,
+        Op::GetGlobal,
+        Op::SetGlobal,
         self.identifier_constant(&token)
       ),
     };
@@ -305,8 +307,8 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.parse_precedence(Precedence::Unary);
 
     match kind {
-      TokenKind::Bang => self.emit_byte(opcode::NOT),
-      TokenKind::Minus => self.emit_byte(opcode::NEGATE),
+      TokenKind::Bang => self.emit_byte(Op::Not),
+      TokenKind::Minus => self.emit_byte(Op::Negate),
       _ => unreachable!()
     }
   }
@@ -374,7 +376,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       return
     }
 
-    self.emit_bytes(opcode::DEFINE_GLOBAL, global);
+    self.emit_bytes(Op::DefineGlobal, global);
   }
 
   fn identifier_constant(&mut self, token: &Token) -> u8 {
@@ -388,7 +390,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     if self.parser.match_token(TokenKind::Equal) {
       self.expression();
     } else {
-      self.emit_byte(opcode::NIL);
+      self.emit_byte(Op::Nil);
     }
     self.parser.consume(TokenKind::Semicolon, "Expect ';' after variable declaration.");
 
@@ -398,13 +400,13 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   fn expression_statement(&mut self) {
     self.expression();
     self.parser.consume(TokenKind::Semicolon, "Expect ';' after expression.");
-    self.emit_byte(opcode::POP);
+    self.emit_byte(Op::Pop);
   }
 
   fn print_statement(&mut self) {
     self.expression();
     self.parser.consume(TokenKind::Semicolon, "Expect ';' after value.");
-    self.emit_byte(opcode::PRINT);
+    self.emit_byte(Op::Print);
   }
 
   fn synchronize(&mut self) {

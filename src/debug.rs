@@ -1,4 +1,4 @@
-use crate::chunk::{Chunk, opcode};
+use crate::chunk::{Chunk, Op};
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
   println!("== {} ==", name);
@@ -28,58 +28,61 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
     print!("{:4} ", line);
   }
 
-  // TODO remove get/expect since code is defaulted?
-  let instruction: u8 = *chunk.code.get(offset).expect("expected instruction");
+  let byte: u8 = *chunk
+    .code
+    .get(offset)
+    .expect("expected instruction");
+  let instruction: Op = byte.into();
 
   match instruction {
-    opcode::CONSTANT =>
+    Op::Constant =>
       constant_instruction("CONSTANT", chunk, offset),
-    opcode::FALSE =>
+    Op::False =>
       simple_instruction("FALSE", offset),
-    opcode::NIL =>
+    Op::Nil =>
       simple_instruction("NIL", offset),
-    opcode::TRUE =>
+    Op::True =>
       simple_instruction("TRUE", offset),
 
-    opcode::ADD =>
+    Op::Add =>
       simple_instruction("ADD", offset),
-    opcode::DIVIDE =>
+    Op::Divide =>
       simple_instruction("DIVIDE", offset),
-    opcode::EQUAL =>
+    Op::Equal =>
       simple_instruction("EQUAL", offset),
-    opcode::GREATER =>
+    Op::Greater =>
       simple_instruction("GREATER", offset),
-    opcode::LESS =>
+    Op::Less =>
       simple_instruction("LESS", offset),
-    opcode::MULTIPLY =>
+    Op::Multiply =>
       simple_instruction("MULTIPLY", offset),
-    opcode::SUBTRACT =>
+    Op::Subtract =>
       simple_instruction("SUBTRACT", offset),
 
-    opcode::NEGATE =>
+    Op::Negate =>
       simple_instruction("NEGATE", offset),
-    opcode::NOT =>
+    Op::Not =>
       simple_instruction("NOT", offset),
 
-    opcode::DEFINE_GLOBAL =>
+    Op::DefineGlobal =>
       constant_instruction("DEFINE_GLOBAL", chunk, offset),
-    opcode::SET_GLOBAL =>
+    Op::SetGlobal =>
       constant_instruction("SET_GLOBAL", chunk, offset),
-    opcode::GET_GLOBAL =>
+    Op::GetGlobal =>
       constant_instruction("GET_GLOBAL", chunk, offset),
-    opcode::SET_LOCAL =>
+    Op::SetLocal =>
       byte_instruction("SET_LOCAL", chunk, offset),
-    opcode::GET_LOCAL =>
+    Op::GetLocal =>
       byte_instruction("GET_LOCAL", chunk, offset),
-    opcode::POP =>
+    Op::Pop =>
       simple_instruction("POP", offset),
-    opcode::PRINT =>
+    Op::Print =>
       simple_instruction("PRINT", offset),
-    opcode::RETURN =>
+    Op::Return =>
       simple_instruction("RETURN", offset),
 
     _ => {
-      println!("Unknown opcode {}", instruction);
+      println!("Unknown Op {}", instruction);
       offset + 1
     }
   }

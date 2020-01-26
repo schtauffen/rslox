@@ -1,35 +1,61 @@
+use std::{fmt, mem};
 use crate::value::Value;
 
-pub mod opcode { // TODO - use enum and T: Into<u8>
-  // pub const ILLEGAL: u8 = 0;
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Op {
+  Illegal = 0,
 
   // Literals
-  pub const CONSTANT: u8 = 1;
-  pub const NIL: u8 = 2;
-  pub const TRUE: u8 = 3;
-  pub const FALSE: u8 = 4;
+  Constant,
+  Nil,
+  True,
+  False,
 
   // Binary
-  pub const ADD: u8 = 5;
-  pub const DIVIDE: u8 = 6;
-  pub const EQUAL: u8 = 7;    // TODO - NOT_EQUAL
-  pub const GREATER: u8 = 8;  // TODO - GREATER_EQUAL
-  pub const LESS: u8 = 9;     // TODO - LESS_EQUAL
-  pub const MULTIPLY: u8 = 10;
-  pub const SUBTRACT: u8 = 11;
+  Add,
+  Divide,
+  Equal,
+  Greater,
+  Less,
+  Multiply,
+  Subtract,
 
   // Unary
-  pub const NEGATE: u8 = 12;
-  pub const NOT: u8 = 13;
+  Negate,
+  Not,
 
-  pub const POP: u8 = 14;
-  pub const PRINT: u8 = 15;
-  pub const DEFINE_GLOBAL: u8 = 16;
-  pub const GET_GLOBAL: u8 = 17;
-  pub const SET_GLOBAL: u8 = 18;
-  pub const GET_LOCAL: u8 = 19;
-  pub const SET_LOCAL: u8 = 20;
-  pub const RETURN: u8 = 21;
+  Pop,
+  Print,
+  DefineGlobal,
+  SetGlobal,
+  GetGlobal,
+  SetLocal,
+  GetLocal,
+  Return,
+}
+
+impl fmt::Display for Op {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", *self as u8)
+  }
+}
+
+impl From<Op> for u8 {
+  fn from(op: Op) -> Self {
+    op as Self
+  }
+}
+
+impl From<u8> for Op {
+  fn from(u: u8) -> Self {
+    if u > 21 {
+      return Op::Illegal
+    }
+
+    // Safe because Op is repr(u8) and we guarded against out of bounds
+    unsafe { mem::transmute::<u8, Self>(u) }
+  }
 }
 
 #[derive(Debug, Default)]
@@ -44,8 +70,9 @@ impl<'a> Chunk<'a> {
     Self::default()
   }
 
-  pub fn write(&mut self, byte: u8, line: i32) {
-    self.code.push(byte);
+  pub fn write<T>(&mut self, byte: T, line: i32)
+  where T: Into<u8> {
+    self.code.push(byte.into());
     self.lines.push(line);
   }
 
@@ -53,5 +80,22 @@ impl<'a> Chunk<'a> {
   pub fn add_constant(&mut self, value: Value<'a>) -> usize {
     self.constants.push(value);
     self.constants.len() - 1
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn it_converts_to_op_return() {
+    let op: Op = 21u8.into();
+    assert_eq!(Op::Return, op);
+  }
+
+  #[test]
+  fn it_converts_out_of_bounds_to_illegal() {
+    let op: Op = 200u8.into();
+    assert_eq!(Op::Illegal, op);
   }
 }

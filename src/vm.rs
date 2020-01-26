@@ -4,7 +4,7 @@ use std::mem::replace;
 use std::ops::Drop;
 use std::rc::Rc;
 
-use crate::chunk::{Chunk, opcode};
+use crate::chunk::{Chunk, Op};
 use crate::compiler::Compiler;
 use crate::interner::{Symbol, StringInterner};
 use crate::memory::free_objects;
@@ -141,8 +141,8 @@ impl<'a> Vm<'a> {
         disassemble_instruction(&self.chunk, self.ip);
       }
 
-      match self.read_byte() {
-        opcode::ADD => {
+      match self.read_byte().into() {
+        Op::Add => {
           match self.pop() {
             Value::Number(b) => match self.pop() {
               Value::Number(a) => self.push(Value::Number(a + b)),
@@ -170,44 +170,44 @@ impl<'a> Vm<'a> {
             _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
           }
         },
-        opcode::DIVIDE => binary_op!(/,Number),
-        opcode::EQUAL => {
+        Op::Divide => binary_op!(/,Number),
+        Op::Equal => {
           let b = self.pop();
           let a = self.pop();
           self.push(Value::Bool(a == b));
         },
-        opcode::GREATER => binary_op!(>,Bool),
-        opcode::LESS => binary_op!(<,Bool),
-        opcode::MULTIPLY => binary_op!(*,Number),
-        opcode::SUBTRACT => binary_op!(-,Number),
+        Op::Greater => binary_op!(>,Bool),
+        Op::Less => binary_op!(<,Bool),
+        Op::Multiply => binary_op!(*,Number),
+        Op::Subtract => binary_op!(-,Number),
 
-        opcode::CONSTANT => {
+        Op::Constant => {
           let constant = self.read_constant();
           self.push(constant);
         },
-        opcode::NIL => self.push(Value::Nil),
-        opcode::TRUE => self.push(Value::Bool(true)),
-        opcode::FALSE => self.push(Value::Bool(false)),
+        Op::Nil => self.push(Value::Nil),
+        Op::True => self.push(Value::Bool(true)),
+        Op::False => self.push(Value::Bool(false)),
 
-        opcode::NEGATE => match self.pop() {
+        Op::Negate => match self.pop() {
           Value::Number(num) => self.push(Value::Number(-num)),
           _ => return self.runtime_error("Operand must be a number."),
         },
-        opcode::NOT => {
+        Op::Not => {
           let value = self.pop().is_falsey();
           self.push(Value::Bool(value));
         },
 
-        opcode::POP => {
+        Op::Pop => {
           self.pop();
         },
-        opcode::DEFINE_GLOBAL => {
+        Op::DefineGlobal => {
           let value = self.read_constant();
           let symbol = value.as_obj().get_symbol();
           self.globals.insert(symbol, self.peek(0).clone());
           self.pop();
         },
-        opcode::SET_GLOBAL => {
+        Op::SetGlobal => {
           let value = self.read_constant();
           let symbol = value.as_obj().get_symbol();
           match self.globals.insert(symbol, self.peek(0).clone()) {
@@ -220,7 +220,7 @@ impl<'a> Vm<'a> {
             }
           }
         },
-        opcode::GET_GLOBAL => {
+        Op::GetGlobal => {
           let value = self.read_constant();
           let symbol = value.as_obj().get_symbol();
           match self.globals.get(&symbol) {
@@ -235,21 +235,21 @@ impl<'a> Vm<'a> {
             }
           }
         },
-        opcode::SET_LOCAL => {
+        Op::SetLocal => {
           let slot = self.read_byte();
           self.stack[slot as usize] = self.peek(0).clone();
         },
-        opcode::GET_LOCAL => {
+        Op::GetLocal => {
           let slot = self.read_byte();
           self.push(self.stack[slot as usize].clone());
         },
-        opcode::PRINT => {
+        Op::Print => {
           let value = self.pop();
           let message = value.get_string(self.interner.clone());
           println!("{}", message);
         },
-        opcode::RETURN => break,
-        _ => panic!("Expected opcode"),
+        Op::Return => break,
+        _ => panic!("Expected Op"),
       }
     }
 
