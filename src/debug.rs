@@ -64,6 +64,10 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
     Op::Not =>
       simple_instruction("NOT", offset),
 
+    Op::Jump =>
+      jump_instruction("JUMP", 1, chunk, offset),
+    Op::JumpIfFalse =>
+      jump_instruction("JUMP_IF_FALSE", 1, chunk, offset),
     Op::DefineGlobal =>
       constant_instruction("DEFINE_GLOBAL", chunk, offset),
     Op::SetGlobal =>
@@ -112,4 +116,21 @@ fn byte_instruction(name: &str, chunk: &Chunk, offset: usize) -> usize {
   let slot = chunk.code[offset + 1];
   println!("{:16} {:04}", name, slot);
   offset + 2
+}
+
+fn jump_instruction(
+  name: &str,
+  sign: i8,
+  chunk: &Chunk,
+  offset: usize
+) -> usize {
+  let mut jump = (chunk.code[offset + 1] as u16) << 8;
+  jump |= chunk.code[offset + 2] as u16;
+  let to_offset = if sign < 0 {
+    offset + 3 - jump as usize
+  } else {
+    offset + 3 + jump as usize
+  };
+  println!("{:16} {:04} -> {}", name, offset, to_offset);
+  offset + 3
 }

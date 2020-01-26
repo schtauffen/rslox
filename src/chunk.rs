@@ -1,6 +1,8 @@
 use std::{fmt, mem};
 use crate::value::Value;
 
+const OP_MAX: u8 = 23;
+
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Op {
@@ -27,6 +29,8 @@ pub enum Op {
 
   Pop,
   Print,
+  Jump,
+  JumpIfFalse,
   DefineGlobal,
   SetGlobal,
   GetGlobal,
@@ -49,7 +53,7 @@ impl From<Op> for u8 {
 
 impl From<u8> for Op {
   fn from(u: u8) -> Self {
-    if u > 21 {
+    if u > OP_MAX {
       return Op::Illegal
     }
 
@@ -89,13 +93,14 @@ mod tests {
 
   #[test]
   fn it_converts_to_op_return() {
-    let op: Op = 21u8.into();
+    let op: Op = OP_MAX.into();
     assert_eq!(Op::Return, op);
   }
 
   #[test]
   fn it_converts_out_of_bounds_to_illegal() {
-    let op: Op = 200u8.into();
+    let overflow = OP_MAX + 1;
+    let op: Op = overflow.into();
     assert_eq!(Op::Illegal, op);
   }
 }

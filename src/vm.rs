@@ -75,6 +75,13 @@ impl<'a> Vm<'a> {
     byte
   }
 
+  fn read_short(&mut self) -> u16 {
+    let byte_1 = self.chunk.code[self.ip];
+    let byte_2 = self.chunk.code[self.ip + 1];
+    self.ip += 2;
+    (byte_1 as u16) << 8 | byte_2 as u16
+  }
+
   fn read_constant(&mut self) -> Value<'a> {
     let index = self.read_byte() as usize;
     self.chunk.constants[index].clone()
@@ -200,6 +207,16 @@ impl<'a> Vm<'a> {
 
         Op::Pop => {
           self.pop();
+        },
+        Op::Jump => {
+          let offset = self.read_short();
+          self.ip += offset as usize;
+        },
+        Op::JumpIfFalse => {
+          let offset = self.read_short();
+          if self.peek(0).is_falsey() {
+            self.ip += offset as usize;
+          }
         },
         Op::DefineGlobal => {
           let value = self.read_constant();

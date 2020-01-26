@@ -132,6 +132,13 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.emit_byte(byte2);
   }
 
+  fn emit_jump(&mut self, op: Op) -> usize { // TODO - JUMP vs LONG_JUMP?
+    self.emit_byte(op);
+    self.emit_byte(0u8);
+    self.emit_byte(0u8);
+    self.current_chunk().code.len() - 2
+  }
+
   fn emit_return(&mut self) {
     self.emit_byte(Op::Return);
   }
@@ -152,6 +159,18 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   fn emit_constant(&mut self, value: Value<'c>) {
     let constant = self.make_constant(value);
     self.emit_bytes(Op::Constant, constant);
+  }
+
+  fn patch_jump(&mut self, offset: usize) {
+    // -2 due to size of jump offset itself
+    let jump = self.current_chunk().code.len() - offset - 2;
+
+    if jump > std::u16::MAX as usize {
+      self.parser.error("Too much code to jump over.");
+    }
+
+    self.current_chunk().code[offset] = (jump >> 8) as u8;
+    self.current_chunk().code[offset + 1] = jump as u8; 
   }
 
   fn end_compiler(&mut self) {
@@ -403,6 +422,25 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.emit_byte(Op::Pop);
   }
 
+  fn if_statement(&mut self) {
+    self.parser.consume(TokenKind::LeftParen, "Expect '(' after 'if'.");
+    self.expression();
+    self.parser.consume(TokenKind::RightParen, "Expect ')' after condition.");
+
+    let then_jump = self.emit_jump(Op::JumpIfFalse);
+    self.emit_byte(Op::Pop);
+    self.statement();
+
+    let else_jump = self.emit_jump(Op::Jump);
+    self.patch_jump(then_jump);
+    self.emit_byte(Op::Pop);
+
+    if self.parser.match_token(TokenKind::Else) {
+      self.statement();
+    }
+    self.patch_jump(else_jump);
+  }
+
   fn print_statement(&mut self) {
     self.expression();
     self.parser.consume(TokenKind::Semicolon, "Expect ';' after value.");
@@ -459,6 +497,8 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   fn statement(&mut self) {
     if self.parser.match_token(TokenKind::Print) {
       self.print_statement();
+    } else if self.parser.match_token(TokenKind::If) {
+      self.if_statement();
     } else if self.parser.match_token(TokenKind::LeftBrace) {
       self.begin_scope();
       self.block();
