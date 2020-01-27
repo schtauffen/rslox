@@ -459,6 +459,58 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.emit_byte(Op::Pop);
   }
 
+  fn for_statement(&mut self) {
+    self.begin_scope();
+    self.parser.consume(TokenKind::LeftParen, "Expect '(' after 'for'.");
+
+    // Initializer clause
+    if self.parser.match_token(TokenKind::Semicolon) {
+      // empty so do nothing
+    } else if self.parser.match_token(TokenKind::Var) {
+      self.var_declaration();
+    } else {
+      self.expression_statement();
+    }
+
+    let mut loop_start = self.current_chunk().code.len();
+
+    // Condition clause
+    let mut exit_jump = None;
+    if !self.parser.match_token(TokenKind::Semicolon) {
+      self.expression();
+      self.parser.consume(TokenKind::Semicolon, "Expect ';' after loop condition.");
+
+      exit_jump = Some(self.emit_jump(Op::JumpIfFalse));
+      self.emit_byte(Op::Pop);
+    }
+
+    // Increment clause
+    if !self.parser.match_token(TokenKind::RightParen) {
+      let body_jump = self.emit_jump(Op::Jump);
+
+      let increment_start = self.current_chunk().code.len();
+      self.expression();
+      self.emit_byte(Op::Pop);
+      self.parser.consume(TokenKind::RightParen, "Expect ')' after for clauses.");
+
+      self.emit_loop(loop_start);
+      loop_start = increment_start;
+      self.patch_jump(body_jump);
+    }
+
+    self.statement();
+
+    self.emit_loop(loop_start);
+
+    // if there was a condition clause, patch its exit jump
+    if let Some(jump) = exit_jump {
+      self.patch_jump(jump);
+      self.emit_byte(Op::Pop);
+    }
+
+    self.end_scope();
+  }
+
   fn if_statement(&mut self) {
     self.parser.consume(TokenKind::LeftParen, "Expect '(' after 'if'.");
     self.expression();
@@ -552,6 +604,8 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   fn statement(&mut self) {
     if self.parser.match_token(TokenKind::Print) {
       self.print_statement();
+    } else if self.parser.match_token(TokenKind::For) {
+      self.for_statement();
     } else if self.parser.match_token(TokenKind::If) {
       self.if_statement();
     } else if self.parser.match_token(TokenKind::While) {
