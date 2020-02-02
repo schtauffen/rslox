@@ -1,12 +1,17 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use crate::chunk::{Op, Chunk};
+use std::{
+  cell::RefCell,
+  rc::Rc,
+};
+use crate::{
+  chunk::{Op, Chunk},
+  interner::StringInterner,
+  obj::{copy_string, Obj, ObjValue, Fun, FunKind},
+  parser::Parser,
+  scanner::{Token, TokenKind},
+  value::Value,
+};
+#[cfg(debug_assertions)]
 use crate::debug;
-use crate::interner::StringInterner;
-use crate::obj::{copy_string, Obj, ObjValue};
-use crate::parser::Parser;
-use crate::scanner::{Token, TokenKind};
-use crate::value::Value;
 
 #[derive(PartialEq, PartialOrd)]
 enum Precedence {
@@ -62,6 +67,7 @@ impl ParseRule {
 enum Act {
   And,
   Binary,
+  Call,
   Grouping,
   Unary,
   Literal,
@@ -83,48 +89,63 @@ impl Local {
 }
 
 pub struct Compiler<'a, 'c: 'a> {
-  allocate: &'a dyn Fn(ObjValue) -> Obj<'c>,
+  // enclosing: Compiler<?>, // TODO - refCell ? unsafe pointer?
+  fun: Fun<'c>,
+  fun_kind: FunKind,
+  allocate: &'a dyn Fn(ObjValue<'c>) -> Obj<'c>,
   interner: Rc<RefCell<StringInterner>>,
-  parser: Parser,
-  compiling_chunk: Chunk<'c>,
+  parser: Rc<RefCell<Parser>>, // TODO - faster (unsafe?) way to share ?
   locals: Vec<Local>, // TODO - allow more locals
   scope_depth: u16,
 }
 
 impl<'a, 'c: 'a> Compiler<'a, 'c> {
   pub fn new(
-    source: String,
-    allocate: &'a dyn Fn(ObjValue) -> Obj<'c>,
+    parser: Rc<RefCell<Parser>>,
+    allocate: &'a dyn Fn(ObjValue<'c>) -> Obj<'c>,
     interner: Rc<RefCell<StringInterner>>,
+    fun_kind: FunKind,
   ) -> Self {
+    let mut fun = Fun::new();
+    fun.name = match fun_kind {
+      FunKind::Script => None,
+      _ => Some(parser.borrow_mut().previous.lexeme.to_string()),
+    };
+
     Self {
+      fun,
+      fun_kind,
       allocate,
       interner,
-      parser: Parser::new(source),
-      compiling_chunk: Chunk::default(),
-      locals: Vec::new(),
+      parser,
+      locals: vec![
+        Local::new(
+          Token::new(TokenKind::Identifier, "", 0),
+          Some(0),
+        )
+      ],
       scope_depth: 0,
     }
   }
 
-  pub fn compile(mut self) -> Result<Chunk<'c>, ()> {
-    self.parser.advance();
+  pub fn compile(mut self) -> Result<Rc<Fun<'c>>, ()> {
+    self.parser.borrow_mut().advance();
 
-    while !self.parser.match_token(TokenKind::EOF) {
+    while !self.parser.borrow_mut().match_token(TokenKind::EOF) {
       self.declaration();
     }
 
     self.end_compiler();
-    if self.parser.had_error {
+    if self.parser.borrow().had_error {
       Err(())
     } else {
-      Ok(self.compiling_chunk)
+      Ok(Rc::new(self.fun))
     }
   }
 
   fn emit_byte<T>(&mut self, byte: T)
   where T: Into<u8> {
-    let line = self.parser.previous.line; // current?
+    let line = self.parser.borrow().previous.line; // current?
     self.current_chunk().write(byte, line);
   }
 
@@ -139,7 +160,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
 
     let offset = self.current_chunk().code.len() - loop_start + 2;
     if offset > std::u16::MAX as usize {
-      self.parser.error("Loop body too large.");
+      self.parser.borrow_mut().error("Loop body too large.");
     }
 
     // TODO : helper of u16 -> (u8, u8) && (u8, u8) -> u16 
@@ -155,6 +176,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   }
 
   fn emit_return(&mut self) {
+    self.emit_byte(Op::Nil);
     self.emit_byte(Op::Return);
   }
 
@@ -164,7 +186,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       .add_constant(value);
     
     if constant > std::u8::MAX as usize {
-      self.parser.error("Too many constants in one chunk.");
+      self.parser.borrow_mut().error("Too many constants in one chunk.");
       return 0;
     }
 
@@ -181,7 +203,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     let jump = self.current_chunk().code.len() - offset - 2;
 
     if jump > std::u16::MAX as usize {
-      self.parser.error("Too much code to jump over.");
+      self.parser.borrow_mut().error("Too much code to jump over.");
     }
 
     self.current_chunk().code[offset] = (jump >> 8) as u8;
@@ -193,8 +215,13 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
 
     #[cfg(debug_assertions)]
     {
-      if !self.parser.had_error {
-        debug::disassemble_chunk(self.current_chunk(), "code");
+      if !self.parser.borrow().had_error {
+        let name = match &self.fun.name {
+          Some(name) => name.clone(),
+          None => "<script>".into(),
+        };
+
+        debug::disassemble_chunk(&self.current_chunk(), name.as_ref());
       }
     }
   }
@@ -223,6 +250,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     match action {
       Act::And => self.and(),
       Act::Binary => self.binary(),
+      Act::Call => self.call(),
       Act::Grouping => self.grouping(),
       Act::Literal => self.literal(),
       Act::Number => self.number(),
@@ -234,7 +262,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   }
 
   fn binary(&mut self) {
-    let kind = self.parser.previous.kind.clone();
+    let kind = self.parser.borrow().previous.kind.clone();
     let precedence = ParseRule::get_rule(kind.clone()).precedence.higher();
     self.parse_precedence(precedence);
 
@@ -253,8 +281,14 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     }
   }
 
+  fn call(&mut self) {
+    let arg_count = self.argument_list();
+    self.emit_bytes(Op::Call, arg_count)
+  }
+
   fn literal(&mut self) {
-    match self.parser.previous.kind {
+    let kind = { self.parser.borrow().previous.kind.clone() };
+    match kind {
       TokenKind::False => self.emit_byte(Op::False),
       TokenKind::Nil => self.emit_byte(Op::Nil),
       TokenKind::True => self.emit_byte(Op::True),
@@ -264,12 +298,13 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
 
   fn grouping(&mut self) {
     self.expression();
-    self.parser.consume(TokenKind::RightParen, "Expect ')' after expression.");
+    self.parser.borrow_mut().consume(TokenKind::RightParen, "Expect ')' after expression.");
   }
 
   fn number(&mut self) {
     let value = self
       .parser
+      .borrow()
       .previous
       .lexeme
       .parse::<f64>()
@@ -290,7 +325,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   }
 
   fn string(&mut self) {
-    let string = copy_string(&self.parser.previous.clone());
+    let string = copy_string(&self.parser.borrow().previous.clone());
     let value = self.string_object(string);
     self.emit_constant(value);
   }
@@ -314,6 +349,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
           Some(_) => return Some(index as u8),
           None => self
             .parser
+            .borrow_mut()
             .error("Cannot read local variable in its own initializer."),
         }
       } 
@@ -336,7 +372,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       ),
     };
 
-    if can_assign && self.parser.match_token(TokenKind::Equal) {
+    if can_assign && self.parser.borrow_mut().match_token(TokenKind::Equal) {
       self.expression();
       self.emit_bytes(set_op, arg);
     } else {
@@ -345,11 +381,12 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   }
 
   fn variable(&mut self, can_assign: bool) {
-    self.named_variable(&self.parser.previous.clone(), can_assign);
+    let previous = { self.parser.borrow().previous.clone() };
+    self.named_variable(&previous, can_assign);
   }
 
   fn unary(&mut self) {
-    let kind = self.parser.previous.kind.clone();
+    let kind = self.parser.borrow().previous.kind.clone();
 
     self.parse_precedence(Precedence::Unary);
 
@@ -365,17 +402,21 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   }
 
   fn parse_variable(&mut self, error_message: &str) -> u8 {
-    self.parser.consume(TokenKind::Identifier, error_message);
+    self.parser.borrow_mut().consume(TokenKind::Identifier, error_message);
 
     self.declare_variable();
     if self.scope_depth > 0 {
       return 0
     }
 
-    self.identifier_constant(&self.parser.previous.clone())
+    let previous = self.parser.borrow().previous.clone();
+    self.identifier_constant(&previous)
   }
 
   fn mark_initialized(&mut self) {
+    if self.scope_depth == 0 {
+      return
+    }
     // TODO - need to hold reference for GC?
     let mut local = self.locals.pop().unwrap();
     local.depth = Some(self.scope_depth);
@@ -384,11 +425,11 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
 
   fn add_local(&mut self, name: Token) {
     if self.locals.len() > std::u8::MAX as usize {
-      self.parser.error("Too many local variables in function.");
+      self.parser.borrow_mut().error("Too many local variables in function.");
       return
     }
 
-    let local = Local::new(name, None);
+    let local = Local::new(name, Some(self.scope_depth));
     self.locals.push(local);
   }
 
@@ -397,7 +438,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       return
     }
 
-    let name = self.parser.previous.clone();
+    let name = self.parser.borrow().previous.clone();
 
     for local in self.locals.iter().rev() {
       match local.depth {
@@ -410,6 +451,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
       if name.lexeme == local.name.lexeme {
         self
           .parser
+          .borrow_mut()
           .error("Variable with this name already declared in this scope.");
       }
     }
@@ -426,6 +468,26 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.emit_bytes(Op::DefineGlobal, global);
   }
 
+  fn argument_list(&mut self) -> u8 {
+    let mut arg_count = 0;
+    if !self.parser.borrow().check(TokenKind::RightParen) {
+      loop {
+        self.expression();
+        if arg_count == 255 {
+          self.parser.borrow_mut().error("Cannot have more than 255 arguments.");
+        }
+        arg_count += 1;
+
+        if !self.parser.borrow_mut().match_token(TokenKind::Comma) {
+          break;
+        }
+      }
+    }
+
+    self.parser.borrow_mut().consume(TokenKind::RightParen, "Expect ')' after arguments.");
+    arg_count
+  }
+
   fn and(&mut self) {
     let end_jump = self.emit_jump(Op::JumpIfFalse);
 
@@ -440,33 +502,40 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.make_constant(value)
   }
 
+  fn fun_declaration(&mut self) {
+    let global = self.parse_variable("Expected function name.");
+    self.mark_initialized();
+    self.function(FunKind::Fun);
+    self.define_variable(global);
+  }
+
   fn var_declaration(&mut self) {
     let global = self.parse_variable("Expect variable name.");
 
-    if self.parser.match_token(TokenKind::Equal) {
+    if self.parser.borrow_mut().match_token(TokenKind::Equal) {
       self.expression();
     } else {
       self.emit_byte(Op::Nil);
     }
-    self.parser.consume(TokenKind::Semicolon, "Expect ';' after variable declaration.");
+    self.parser.borrow_mut().consume(TokenKind::Semicolon, "Expect ';' after variable declaration.");
 
     self.define_variable(global);
   }
 
   fn expression_statement(&mut self) {
     self.expression();
-    self.parser.consume(TokenKind::Semicolon, "Expect ';' after expression.");
+    self.parser.borrow_mut().consume(TokenKind::Semicolon, "Expect ';' after expression.");
     self.emit_byte(Op::Pop);
   }
 
   fn for_statement(&mut self) {
     self.begin_scope();
-    self.parser.consume(TokenKind::LeftParen, "Expect '(' after 'for'.");
+    self.parser.borrow_mut().consume(TokenKind::LeftParen, "Expect '(' after 'for'.");
 
     // Initializer clause
-    if self.parser.match_token(TokenKind::Semicolon) {
+    if self.parser.borrow_mut().match_token(TokenKind::Semicolon) {
       // empty so do nothing
-    } else if self.parser.match_token(TokenKind::Var) {
+    } else if self.parser.borrow_mut().match_token(TokenKind::Var) {
       self.var_declaration();
     } else {
       self.expression_statement();
@@ -476,22 +545,22 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
 
     // Condition clause
     let mut exit_jump = None;
-    if !self.parser.match_token(TokenKind::Semicolon) {
+    if !self.parser.borrow_mut().match_token(TokenKind::Semicolon) {
       self.expression();
-      self.parser.consume(TokenKind::Semicolon, "Expect ';' after loop condition.");
+      self.parser.borrow_mut().consume(TokenKind::Semicolon, "Expect ';' after loop condition.");
 
       exit_jump = Some(self.emit_jump(Op::JumpIfFalse));
       self.emit_byte(Op::Pop);
     }
 
     // Increment clause
-    if !self.parser.match_token(TokenKind::RightParen) {
+    if !self.parser.borrow_mut().match_token(TokenKind::RightParen) {
       let body_jump = self.emit_jump(Op::Jump);
 
       let increment_start = self.current_chunk().code.len();
       self.expression();
       self.emit_byte(Op::Pop);
-      self.parser.consume(TokenKind::RightParen, "Expect ')' after for clauses.");
+      self.parser.borrow_mut().consume(TokenKind::RightParen, "Expect ')' after for clauses.");
 
       self.emit_loop(loop_start);
       loop_start = increment_start;
@@ -512,9 +581,9 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   }
 
   fn if_statement(&mut self) {
-    self.parser.consume(TokenKind::LeftParen, "Expect '(' after 'if'.");
+    self.parser.borrow_mut().consume(TokenKind::LeftParen, "Expect '(' after 'if'.");
     self.expression();
-    self.parser.consume(TokenKind::RightParen, "Expect ')' after condition.");
+    self.parser.borrow_mut().consume(TokenKind::RightParen, "Expect ')' after condition.");
 
     let then_jump = self.emit_jump(Op::JumpIfFalse);
     self.emit_byte(Op::Pop);
@@ -524,7 +593,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
     self.patch_jump(then_jump);
     self.emit_byte(Op::Pop);
 
-    if self.parser.match_token(TokenKind::Else) {
+    if self.parser.borrow_mut().match_token(TokenKind::Else) {
       self.statement();
     }
     self.patch_jump(else_jump);
@@ -532,16 +601,30 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
 
   fn print_statement(&mut self) {
     self.expression();
-    self.parser.consume(TokenKind::Semicolon, "Expect ';' after value.");
+    self.parser.borrow_mut().consume(TokenKind::Semicolon, "Expect ';' after value.");
     self.emit_byte(Op::Print);
+  }
+
+  fn return_statement(&mut self) {
+    if self.fun_kind == FunKind::Script {
+      self.parser.borrow_mut().error("Cannot return from top-level code.");
+    }
+
+    if self.parser.borrow_mut().match_token(TokenKind::Semicolon) {
+      self.emit_return();
+    } else {
+      self.expression();
+      self.parser.borrow_mut().consume(TokenKind::Semicolon, "Expect ';' after return value.");
+      self.emit_byte(Op::Return);
+    }
   }
 
   fn while_statement(&mut self) {
     let loop_start = self.current_chunk().code.len();
 
-    self.parser.consume(TokenKind::LeftParen, "Expect '(' after 'while'.");
+    self.parser.borrow_mut().consume(TokenKind::LeftParen, "Expect '(' after 'while'.");
     self.expression();
-    self.parser.consume(TokenKind::RightParen, "Expect ')' after condition.");
+    self.parser.borrow_mut().consume(TokenKind::RightParen, "Expect ')' after condition.");
 
     let exit_jump = self.emit_jump(Op::JumpIfFalse);
 
@@ -555,14 +638,14 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   }
 
   fn synchronize(&mut self) {
-    self.parser.panic_mode = false;
+    self.parser.borrow_mut().panic_mode = false;
 
-    while self.parser.current.kind != TokenKind::EOF {
-      if self.parser.previous.kind == TokenKind::Semicolon {
+    while self.parser.borrow().current.kind != TokenKind::EOF {
+      if self.parser.borrow().previous.kind == TokenKind::Semicolon {
         return;
       }
 
-      match self.parser.current.kind {
+      match self.parser.borrow().current.kind {
         TokenKind::Class => return,
         TokenKind::Fun => return,
         TokenKind::Var => return,
@@ -574,43 +657,94 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
         _ => (),
       }
 
-      self.parser.advance();
+      self.parser.borrow_mut().advance();
     }
   }
 
   fn declaration(&mut self) {
-    if self.parser.match_token(TokenKind::Var) {
+    if self.parser.borrow_mut().match_token(TokenKind::Fun) {
+      self.fun_declaration();
+    } else if self.parser.borrow_mut().match_token(TokenKind::Var) {
       self.var_declaration();
     } else {
       self.statement();
     }
 
-    if self.parser.panic_mode {
+    if self.parser.borrow().panic_mode {
       self.synchronize();
     }
   }
 
   fn block (&mut self) {
     while
-      !self.parser.check(TokenKind::RightBrace) &&
-      !self.parser.check(TokenKind::EOF)
+      !self.parser.borrow().check(TokenKind::RightBrace) &&
+      !self.parser.borrow().check(TokenKind::EOF)
     {
       self.declaration();
     }
 
-    self.parser.consume(TokenKind::RightBrace, "Expect '}' after block.");
+    self.parser.borrow_mut().consume(TokenKind::RightBrace, "Expect '}' after block.");
+  }
+
+  fn compile_function(mut self) -> Fun<'c> {
+    self.begin_scope();
+
+    // Parameter list
+    self.parser
+      .borrow_mut()
+      .consume(TokenKind::LeftParen, "Expect '(' after function name.");
+    if !self.parser.borrow().check(TokenKind::RightParen) {
+      loop {
+        self.fun.arity += 1;
+        if self.fun.arity > 255 {
+          self.parser.borrow_mut().error_at_current("Cannot have more than 255 params.");
+        }
+
+        let param_const = self.parse_variable("Expect param name.");
+        self.define_variable(param_const);
+
+        if !self.parser.borrow_mut().match_token(TokenKind::Comma) {
+          break;
+        }
+      }
+    }
+    self.parser
+      .borrow_mut()
+      .consume(TokenKind::RightParen, "Expect ')' after parameters.");
+
+    // Body
+    self.parser
+      .borrow_mut()
+      .consume(TokenKind::LeftBrace, "Expect '{' before function body.");
+    self.block();
+
+    self.end_compiler();
+    self.fun
+  }
+
+  fn function(&mut self, fun_kind: FunKind) {
+    let fun_compiler = Compiler::new(
+      self.parser.clone(),
+      &self.allocate,
+      self.interner.clone(),
+      fun_kind
+    );
+    let fun = fun_compiler.compile_function();
+    self.emit_constant(Value::Obj(Obj::new(ObjValue::Fun(Rc::new(fun)))));
   }
 
   fn statement(&mut self) {
-    if self.parser.match_token(TokenKind::Print) {
+    if self.parser.borrow_mut().match_token(TokenKind::Print) {
       self.print_statement();
-    } else if self.parser.match_token(TokenKind::For) {
+    } else if self.parser.borrow_mut().match_token(TokenKind::For) {
       self.for_statement();
-    } else if self.parser.match_token(TokenKind::If) {
+    } else if self.parser.borrow_mut().match_token(TokenKind::If) {
       self.if_statement();
-    } else if self.parser.match_token(TokenKind::While) {
+    } else if self.parser.borrow_mut().match_token(TokenKind::Return) {
+      self.return_statement();
+    } else if self.parser.borrow_mut().match_token(TokenKind::While) {
       self.while_statement();
-    } else if self.parser.match_token(TokenKind::LeftBrace) {
+    } else if self.parser.borrow_mut().match_token(TokenKind::LeftBrace) {
       self.begin_scope();
       self.block();
       self.end_scope();
@@ -620,37 +754,37 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   }
 
   fn parse_precedence(&mut self, precedence: Precedence) {
-    self.parser.advance();
+    self.parser.borrow_mut().advance();
 
-    let prefix_fn = ParseRule::get_rule(self.parser.previous.kind.clone()).prefix.clone();
+    let prefix_fn = ParseRule::get_rule(self.parser.borrow().previous.kind.clone()).prefix.clone();
     let can_assign = precedence <= Precedence::Assignment;
 
     if let Some(action) = prefix_fn {
       self.execute_action(action, can_assign);
     } else {
-      self.parser.error("Expect expression.");
+      self.parser.borrow_mut().error("Expect expression.");
       return;
     }
 
-    while precedence <= ParseRule::get_rule(self.parser.current.kind.clone()).precedence {
-      self.parser.advance();
-      let infix_fn = ParseRule::get_rule(self.parser.previous.kind.clone()).infix.clone().unwrap();
+    while precedence <= ParseRule::get_rule(self.parser.borrow().current.kind.clone()).precedence {
+      self.parser.borrow_mut().advance();
+      let infix_fn = ParseRule::get_rule(self.parser.borrow().previous.kind.clone()).infix.clone().unwrap();
       self.execute_action(infix_fn, can_assign);
     }
 
-    if can_assign && self.parser.match_token(TokenKind::Equal) {
-      self.parser.error("Invalid assignment target.");
+    if can_assign && self.parser.borrow_mut().match_token(TokenKind::Equal) {
+      self.parser.borrow_mut().error("Invalid assignment target.");
     }
   }
 
   fn current_chunk(&mut self) -> &mut Chunk<'c> {
-    &mut self.compiling_chunk
+    &mut self.fun.chunk
   }
 }
 
 // TODO - mixfix: ternary ?
 const RULES_TABLE: [ParseRule; 40] = [
-  ParseRule::new(Some(Act::Grouping), None, Precedence::None),  // LeftParen
+  ParseRule::new(Some(Act::Grouping), Some(Act::Call), Precedence::Call),// LeftParen
   ParseRule::new(None, None, Precedence::None),                 // RightParen
   ParseRule::new(None, None, Precedence::None),                 // LeftBrace
   ParseRule::new(None, None, Precedence::None),                 // RightBrace

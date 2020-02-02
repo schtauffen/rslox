@@ -1,24 +1,46 @@
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::mem::replace;
-use std::ops::Drop;
-use std::rc::Rc;
-
-use crate::chunk::{Chunk, Op};
-use crate::compiler::Compiler;
-use crate::interner::{Symbol, StringInterner};
-use crate::memory::free_objects;
-use crate::obj::{Obj, ObjValue};
-use crate::value::Value;
+use std::{
+  cell::{Cell, RefCell},
+  collections::HashMap,
+  mem::replace,
+  ops::Drop,
+  rc::Rc,
+};
+use crate::{
+  chunk::Op,
+  compiler::Compiler,
+  interner::{Symbol, StringInterner},
+  memory::free_objects,
+  obj::{Fun, FunKind, Obj, ObjValue},
+  parser::Parser,
+  value::Value,
+};
 
 #[cfg(debug_assertions)]
 use crate::debug::disassemble_instruction;
 
-const DEFAULT_STACK_MAX: usize = 500;
+const FRAMES_MAX: usize = 64;
+const STACK_MAX: usize = (FRAMES_MAX * std::u8::MAX as usize);
+const CALL_ONLY_FUNCTIONS_AND_CLASSES_ERROR: &str = "Can only call functions and classes";
+
+struct CallFrame<'a> {
+  fun: Rc<Fun<'a>>,
+  ip: usize,
+  slots: usize,
+}
+
+impl<'a> CallFrame<'a> {
+  pub fn new(fun: &Rc<Fun<'a>>) -> Self {
+    Self {
+      fun: fun.clone(),
+      ip: 0,
+      slots: 0,
+    }
+  }
+}
 
 pub struct Vm<'a> {
-  chunk: Chunk<'a>,
-  ip: usize,
+  frames: Vec<CallFrame<'a>>,
+  frame_count: usize,
   stack: Vec<Value<'a>>,
   stack_top: usize,
   objects: Cell<Option<&'a Obj<'a>>>,
@@ -45,10 +67,10 @@ const ADD_OPERAND_MISMATCH_ERROR: &'static str = "Operands must be two numbers o
 impl<'a> Vm<'a> {
   pub fn new() -> Self {
     Self {
-      chunk: Chunk::default(),
-      ip: 0,
+      frames: vec![],
+      frame_count: 0,
       stack_top: 0,
-      stack: vec![Value::default(); DEFAULT_STACK_MAX],
+      stack: vec![Value::default(); STACK_MAX],
       objects: Cell::new(Option::None),
       globals: HashMap::new(),
       interner: Rc::new(RefCell::new(StringInterner::new())),
@@ -69,25 +91,55 @@ impl<'a> Vm<'a> {
     &self.stack[self.stack_top - (distance + 1)]
   }
 
+  fn call(&mut self, fun: &Rc<Fun<'a>>, arg_count: usize) -> InterpretResult {
+    if arg_count != fun.arity as usize {
+      let message = format!("Expected {} arguments but got {}.", fun.arity, arg_count);
+      return self.runtime_error(&message)
+    }
+
+    if self.frame_count == FRAMES_MAX {
+      return self.runtime_error("Stack overflow.")
+    }
+
+    let mut frame = CallFrame::new(fun);
+    frame.slots = self.stack_top - arg_count - 1;
+    self.frames.push(frame);
+    self.frame_count += 1;
+    InterpretResult::Success
+  }
+
+  fn call_value(&mut self, callee: Value<'a>, arg_count: usize) -> InterpretResult {
+    match callee {
+      Value::Obj(obj) => match &obj.value {
+        ObjValue::Fun(fun) => self.call(fun, arg_count),
+        _ => return self.runtime_error(CALL_ONLY_FUNCTIONS_AND_CLASSES_ERROR),
+      },
+      _ => return self.runtime_error(CALL_ONLY_FUNCTIONS_AND_CLASSES_ERROR),
+    }
+  }
+
   fn read_byte(&mut self) -> u8 {
-    let byte = self.chunk.code[self.ip];
-    self.ip += 1;
+    let frame = self.current_frame();
+    let byte = frame.fun.chunk.code[frame.ip];
+    frame.ip += 1;
+
     byte
   }
 
   fn read_short(&mut self) -> u16 {
-    let byte_1 = self.chunk.code[self.ip];
-    let byte_2 = self.chunk.code[self.ip + 1];
-    self.ip += 2;
-    (byte_1 as u16) << 8 | byte_2 as u16
+    let frame = self.current_frame();
+    let byte1 = frame.fun.chunk.code[frame.ip];
+    let byte2 = frame.fun.chunk.code[frame.ip + 1];
+    frame.ip +=2;
+    (byte1 as u16) << 8 | byte2 as u16
   }
 
   fn read_constant(&mut self) -> Value<'a> {
     let index = self.read_byte() as usize;
-    self.chunk.constants[index].clone()
+    self.current_frame().fun.chunk.constants[index].clone()
   }
 
-  fn allocate(&self, value: ObjValue) -> Obj<'a> {
+  fn allocate(&self, value: ObjValue<'a>) -> Obj<'a> {
     let obj = Obj::new(value);
     obj.next.set(self.objects.get());
     self.objects.set(obj.next.get());
@@ -101,23 +153,39 @@ impl<'a> Vm<'a> {
 
   fn runtime_error(&mut self, message: &str) -> InterpretResult {
     eprintln!("{}", message);
-    eprintln!("[line {}] in script", self.chunk.lines[self.ip]);
+
+    for frame in self.frames[0..self.frame_count].iter().rev() {
+      eprint!("[line {}] in ", &frame.fun.chunk.lines[frame.ip - 1]);
+      match &frame.fun.name {
+        None => eprintln!("script"),
+        Some(name) => eprintln!("{}", name),
+      }
+    }
 
     self.reset_stack();
 
     InterpretResult::RuntimeError
   }
 
+  fn current_frame(&mut self) -> &mut CallFrame<'a> {
+    &mut self.frames[self.frame_count - 1]
+  }
+
   pub fn interpret(&mut self, source: String) -> InterpretResult {
-    let allocate = |value: ObjValue| self.allocate(value);
+    let parser = Rc::new(RefCell::new(Parser::new(source)));
+    let allocate = |value: ObjValue<'a>| self.allocate(value);
     let interner = Rc::clone(&self.interner);
-    let compiler = Compiler::new(source, &allocate, interner);
+    let compiler = Compiler::new(parser.clone(), &allocate, interner, FunKind::Script);
 
     match compiler.compile() {
       Err(_) => InterpretResult::CompileError,
-      Ok(chunk) => {
-        self.chunk = chunk;
-        self.ip = 0;
+      Ok(fun) => {
+        self.frames = vec![]; // TODO - use filled array instead of frames.push
+        self.frame_count = 0;
+        let script = Value::Obj(Obj::new(ObjValue::Fun(fun)));
+        self.stack[0] = script.clone();
+        self.stack_top = 1;
+        self.call_value(script, 0);
         self.run()
       }
     }
@@ -145,7 +213,8 @@ impl<'a> Vm<'a> {
           print!("[ {} ]", string);
         }
         println!("");
-        disassemble_instruction(&self.chunk, self.ip);
+        let frame = self.current_frame();
+        disassemble_instruction(&frame.fun.chunk, frame.ip);
       }
 
       match self.read_byte().into() {
@@ -168,11 +237,11 @@ impl<'a> Vm<'a> {
                     };
                     self.push(Value::Obj(Obj::new(ObjValue::String(symbol))));
                   },
-                  // _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
+                  _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
                 }
                 _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
               },
-              // _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
+              _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
             },
             _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
           }
@@ -205,17 +274,25 @@ impl<'a> Vm<'a> {
           self.push(Value::Bool(value));
         },
 
+        Op::Call => {
+          let arg_count: usize = self.read_byte().into();
+          let value = self.peek(arg_count).clone();
+          match self.call_value(value, arg_count) {
+            InterpretResult::Success => (),
+            _ => return InterpretResult::RuntimeError,
+          }
+        },
         Op::Pop => {
           self.pop();
         },
         Op::Jump => {
-          let offset = self.read_short();
-          self.ip += offset as usize;
+          let offset: usize = self.read_short().into();
+          self.current_frame().ip += offset;
         },
         Op::JumpIfFalse => {
-          let offset = self.read_short();
+          let offset: usize = self.read_short().into();
           if self.peek(0).is_falsey() {
-            self.ip += offset as usize;
+            self.current_frame().ip += offset;
           }
         },
         Op::DefineGlobal => {
@@ -253,27 +330,39 @@ impl<'a> Vm<'a> {
           }
         },
         Op::SetLocal => {
-          let slot = self.read_byte();
-          self.stack[slot as usize] = self.peek(0).clone();
+          let slot: usize = self.read_byte().into();
+          let slots = self.current_frame().slots;
+          self.stack[1 + slots + slot] = self.peek(0).clone();
         },
         Op::GetLocal => {
-          let slot = self.read_byte();
-          self.push(self.stack[slot as usize].clone());
+          let slot: usize = self.read_byte().into();
+          let slots = self.current_frame().slots;
+          let value = self.stack[1 + slots + slot].clone();
+          self.push(value);
         },
         Op::Loop => {
-          let offset = self.read_short() as usize;
-          self.ip -= offset;
+          let offset: usize = self.read_short().into();
+          self.current_frame().ip -= offset;
         },
         Op::Print => {
           let value = self.pop();
           let message = value.get_string(self.interner.clone());
           println!("{}", message);
         },
-        Op::Return => break,
+        Op::Return => {
+          let result = self.pop();
+          self.frame_count -= 1;
+
+          if self.frame_count == 0 {
+            self.pop();
+            return InterpretResult::Success
+          }
+
+          self.stack_top = self.frames[self.frame_count].slots;
+          self.push(result);
+        },
         _ => panic!("Expected Op"),
       }
     }
-
-    InterpretResult::Success
   }
 }

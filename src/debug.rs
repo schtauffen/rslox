@@ -19,7 +19,7 @@ pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
 pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
   print!("{:04} ", offset);
 
-  let line = chunk.lines.get(offset).expect("expected line number");
+  let line = chunk.lines.get(offset).unwrap_or(&-1);
   if offset > 0 &&
     line ==chunk.lines.get(offset - 1).expect("expected previous line number")
   {
@@ -31,7 +31,7 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
   let byte: u8 = *chunk
     .code
     .get(offset)
-    .expect("expected instruction");
+    .unwrap_or(&0);
   let instruction: Op = byte.into();
 
   match instruction {
@@ -64,6 +64,8 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
     Op::Not =>
       simple_instruction("NOT", offset),
 
+    Op::Call =>
+      byte_instruction("CALL", chunk, offset),
     Op::Jump =>
       jump_instruction("JUMP", 1, chunk, offset),
     Op::JumpIfFalse =>

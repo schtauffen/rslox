@@ -73,6 +73,7 @@ impl<'a> Value<'a> {
             None => unreachable!("Expected string"),
           }
         },
+        _ => format!("{}", self),
       },
       _ => format!("{}", self),
     }

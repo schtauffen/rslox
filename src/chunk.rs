@@ -1,7 +1,7 @@
 use std::{fmt, mem};
 use crate::value::Value;
 
-const OP_MAX: u8 = 24;
+const OP_MAX: u8 = 25;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,6 +27,7 @@ pub enum Op {
   Negate,
   Not,
 
+  Call,
   DefineGlobal,
   Jump,
   JumpIfFalse,
@@ -64,7 +65,7 @@ impl From<u8> for Op {
   }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Chunk<'a> {
   pub code: Vec<u8>,
   pub constants: Vec<Value<'a>>, // TODO - hashmap with symbols?
