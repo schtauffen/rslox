@@ -9,6 +9,7 @@ use crate::{
   interner::Symbol,
   scanner::Token,
   utils::{next_boundary, previous_boundary},
+  value::Value,
 };
 
 #[derive(Debug, Clone)]
@@ -21,6 +22,7 @@ pub struct Obj<'a> {
 pub enum ObjValue<'a> {
   String(Symbol),
   Fun(Rc<Fun<'a>>),
+  Native(Native<'a>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -33,6 +35,35 @@ pub struct Fun<'a> {
 impl<'a> Default for Fun<'a> {
   fn default() -> Self {
     Self { arity: 0, chunk: Chunk::default(), name: None }
+  }
+}
+
+#[derive(Clone)]
+pub struct Native<'a> {
+  pub name: String,
+  pub arity: u8,
+  pub fun: Rc<dyn Fn(&[Value<'a>]) -> Result<Value<'a>, String> + 'a>,
+}
+
+impl <'a> fmt::Debug for Native<'a> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "Native {}({})", self.name, self.arity)
+  }
+}
+
+impl <'a> PartialEq for Native<'a> {
+  fn eq(&self, other: &Self) -> bool {
+    self.name == other.name
+  }
+}
+
+impl <'a> Native<'a> {
+  pub fn new(name: String, arity: u8, fun: Rc<dyn Fn(&[Value<'a>]) -> Result<Value<'a>, String> + 'a>) -> Self {
+    Self {
+      name,
+      arity,
+      fun,
+    }
   }
 }
 
@@ -50,6 +81,7 @@ impl fmt::Display for Obj<'_> {
         Some(name) => write!(f, "<fn {}>", name),
         None => write!(f, "<script>"),
       },
+      ObjValue::Native(native) => write!(f, "<native {}>", native.name),
     }
   }
 }
@@ -68,7 +100,11 @@ impl<'a> PartialEq for Obj<'a> {
       ObjValue::Fun(fun1) => match &other.value {
         ObjValue::Fun(fun2) => fun1 == fun2,
         _ => false,
-      }
+      },
+      ObjValue::Native(native1) => match &other.value {
+        ObjValue::Native(native2) => native1 == native2,
+        _ => false,
+      },
     }
   }
 }

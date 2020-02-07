@@ -424,7 +424,7 @@ impl<'a, 'c: 'a> Compiler<'a, 'c> {
   }
 
   fn add_local(&mut self, name: Token) {
-    if self.locals.len() > std::u8::MAX as usize {
+    if self.locals.len() == std::u8::MAX as usize {
       self.parser.borrow_mut().error("Too many local variables in function.");
       return
     }

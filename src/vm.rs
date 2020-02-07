@@ -1,18 +1,19 @@
+use crate::{
+  chunk::Op,
+  compiler::Compiler,
+  interner::{StringInterner, Symbol},
+  memory::free_objects,
+  obj::{Fun, FunKind, Native, Obj, ObjValue},
+  parser::Parser,
+  value::Value,
+};
 use std::{
   cell::{Cell, RefCell},
   collections::HashMap,
   mem::replace,
   ops::Drop,
   rc::Rc,
-};
-use crate::{
-  chunk::Op,
-  compiler::Compiler,
-  interner::{Symbol, StringInterner},
-  memory::free_objects,
-  obj::{Fun, FunKind, Obj, ObjValue},
-  parser::Parser,
-  value::Value,
+  time::SystemTime,
 };
 
 #[cfg(debug_assertions)]
@@ -22,6 +23,7 @@ const FRAMES_MAX: usize = 64;
 const STACK_MAX: usize = (FRAMES_MAX * std::u8::MAX as usize);
 const CALL_ONLY_FUNCTIONS_AND_CLASSES_ERROR: &str = "Can only call functions and classes";
 
+#[derive(Clone)]
 struct CallFrame<'a> {
   fun: Rc<Fun<'a>>,
   ip: usize,
@@ -66,15 +68,35 @@ const ADD_OPERAND_MISMATCH_ERROR: &'static str = "Operands must be two numbers o
 
 impl<'a> Vm<'a> {
   pub fn new() -> Self {
-    Self {
-      frames: vec![],
+    let null_fun = Rc::new(Fun::new());
+    let frames = vec![CallFrame::new(&null_fun); FRAMES_MAX];
+
+    let mut vm = Self {
+      frames,
       frame_count: 0,
       stack_top: 0,
       stack: vec![Value::default(); STACK_MAX],
       objects: Cell::new(Option::None),
       globals: HashMap::new(),
       interner: Rc::new(RefCell::new(StringInterner::new())),
-    }
+    };
+    vm.define_clock();
+    vm
+  }
+
+  fn define_clock(&mut self) {
+    let clock = Rc::new(Vm::create_clock());
+    let native = Native::new("clock".to_string(), 0, clock);
+    self.define_native(native);
+  }
+
+  fn create_clock<'b>() -> Box<dyn Fn(&[Value<'b>]) -> Result<Value<'b>, String>> {
+    let now = SystemTime::now();
+
+    Box::new(move |_: &[Value<'b>]| match now.elapsed() {
+      Ok(elapsed) => Ok(Value::Number((elapsed.as_micros() as f64) / 1000000.0)),
+      Err(e) => Err(format!("clock failed {}", e)),
+    })
   }
 
   fn push(&mut self, value: Value<'a>) {
@@ -94,24 +116,45 @@ impl<'a> Vm<'a> {
   fn call(&mut self, fun: &Rc<Fun<'a>>, arg_count: usize) -> InterpretResult {
     if arg_count != fun.arity as usize {
       let message = format!("Expected {} arguments but got {}.", fun.arity, arg_count);
-      return self.runtime_error(&message)
+      return self.runtime_error(&message);
     }
 
     if self.frame_count == FRAMES_MAX {
-      return self.runtime_error("Stack overflow.")
+      return self.runtime_error("Stack overflow.");
     }
 
     let mut frame = CallFrame::new(fun);
-    frame.slots = self.stack_top - arg_count - 1;
-    self.frames.push(frame);
+    frame.slots = self.stack_top - (arg_count + 1);
+    self.frames[self.frame_count] = frame;
     self.frame_count += 1;
     InterpretResult::Success
+  }
+
+  fn call_native(&mut self, native: &Native<'a>, arg_count: usize) -> InterpretResult {
+    if arg_count != native.arity as usize {
+      let message = format!(
+        "Expected {} arguments, but got {}.",
+        native.arity, arg_count
+      );
+      return self.runtime_error(&message);
+    }
+
+    let result = (native.fun)(&self.stack[self.stack_top - arg_count..self.stack_top]);
+    return match result {
+      Ok(value) => {
+        self.stack_top -= arg_count + 1;
+        self.push(value);
+        InterpretResult::Success
+      }
+      Err(message) => self.runtime_error(&message),
+    };
   }
 
   fn call_value(&mut self, callee: Value<'a>, arg_count: usize) -> InterpretResult {
     match callee {
       Value::Obj(obj) => match &obj.value {
         ObjValue::Fun(fun) => self.call(fun, arg_count),
+        ObjValue::Native(native) => self.call_native(native, arg_count),
         _ => return self.runtime_error(CALL_ONLY_FUNCTIONS_AND_CLASSES_ERROR),
       },
       _ => return self.runtime_error(CALL_ONLY_FUNCTIONS_AND_CLASSES_ERROR),
@@ -130,7 +173,7 @@ impl<'a> Vm<'a> {
     let frame = self.current_frame();
     let byte1 = frame.fun.chunk.code[frame.ip];
     let byte2 = frame.fun.chunk.code[frame.ip + 1];
-    frame.ip +=2;
+    frame.ip += 2;
     (byte1 as u16) << 8 | byte2 as u16
   }
 
@@ -167,6 +210,16 @@ impl<'a> Vm<'a> {
     InterpretResult::RuntimeError
   }
 
+  fn define_native(&mut self, native: Native<'a>) {
+    // TODO - stack shenanigans to prevent GC?
+    let symbol = self
+      .interner
+      .borrow_mut()
+      .get_or_intern(&native.name.clone());
+    let value = Value::Obj(Obj::new(ObjValue::Native(native)));
+    self.globals.insert(symbol, value);
+  }
+
   fn current_frame(&mut self) -> &mut CallFrame<'a> {
     &mut self.frames[self.frame_count - 1]
   }
@@ -180,7 +233,6 @@ impl<'a> Vm<'a> {
     match compiler.compile() {
       Err(_) => InterpretResult::CompileError,
       Ok(fun) => {
-        self.frames = vec![]; // TODO - use filled array instead of frames.push
         self.frame_count = 0;
         let script = Value::Obj(Obj::new(ObjValue::Fun(fun)));
         self.stack[0] = script.clone();
@@ -218,40 +270,38 @@ impl<'a> Vm<'a> {
       }
 
       match self.read_byte().into() {
-        Op::Add => {
-          match self.pop() {
-            Value::Number(b) => match self.pop() {
-              Value::Number(a) => self.push(Value::Number(a + b)),
-              _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
-            },
-            Value::Obj(obj2) => match obj2.value {
-              ObjValue::String(b) => match self.pop() {
-                Value::Obj(obj1) => match obj1.value {
-                  ObjValue::String(a) => {
-                    let symbol = {
-                      let mut interner = self.interner.borrow_mut();
-                      let string_a = interner.resolve(a).unwrap();
-                      let string_b = interner.resolve(b).unwrap();
-                      let string = format!("{}{}", string_a, string_b);
-                      interner.get_or_intern(string)
-                    };
-                    self.push(Value::Obj(Obj::new(ObjValue::String(symbol))));
-                  },
-                  _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
+        Op::Add => match self.pop() {
+          Value::Number(b) => match self.pop() {
+            Value::Number(a) => self.push(Value::Number(a + b)),
+            _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
+          },
+          Value::Obj(obj2) => match obj2.value {
+            ObjValue::String(b) => match self.pop() {
+              Value::Obj(obj1) => match obj1.value {
+                ObjValue::String(a) => {
+                  let symbol = {
+                    let mut interner = self.interner.borrow_mut();
+                    let string_a = interner.resolve(a).unwrap();
+                    let string_b = interner.resolve(b).unwrap();
+                    let string = format!("{}{}", string_a, string_b);
+                    interner.get_or_intern(string)
+                  };
+                  self.push(Value::Obj(Obj::new(ObjValue::String(symbol))));
                 }
                 _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
               },
               _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
             },
             _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
-          }
+          },
+          _ => return self.runtime_error(&ADD_OPERAND_MISMATCH_ERROR),
         },
         Op::Divide => binary_op!(/,Number),
         Op::Equal => {
           let b = self.pop();
           let a = self.pop();
           self.push(Value::Bool(a == b));
-        },
+        }
         Op::Greater => binary_op!(>,Bool),
         Op::Less => binary_op!(<,Bool),
         Op::Multiply => binary_op!(*,Number),
@@ -260,7 +310,7 @@ impl<'a> Vm<'a> {
         Op::Constant => {
           let constant = self.read_constant();
           self.push(constant);
-        },
+        }
         Op::Nil => self.push(Value::Nil),
         Op::True => self.push(Value::Bool(true)),
         Op::False => self.push(Value::Bool(false)),
@@ -272,7 +322,7 @@ impl<'a> Vm<'a> {
         Op::Not => {
           let value = self.pop().is_falsey();
           self.push(Value::Bool(value));
-        },
+        }
 
         Op::Call => {
           let arg_count: usize = self.read_byte().into();
@@ -281,26 +331,26 @@ impl<'a> Vm<'a> {
             InterpretResult::Success => (),
             _ => return InterpretResult::RuntimeError,
           }
-        },
+        }
         Op::Pop => {
           self.pop();
-        },
+        }
         Op::Jump => {
           let offset: usize = self.read_short().into();
           self.current_frame().ip += offset;
-        },
+        }
         Op::JumpIfFalse => {
           let offset: usize = self.read_short().into();
           if self.peek(0).is_falsey() {
             self.current_frame().ip += offset;
           }
-        },
+        }
         Op::DefineGlobal => {
           let value = self.read_constant();
           let symbol = value.as_obj().get_symbol();
           self.globals.insert(symbol, self.peek(0).clone());
           self.pop();
-        },
+        }
         Op::SetGlobal => {
           let value = self.read_constant();
           let symbol = value.as_obj().get_symbol();
@@ -310,10 +360,10 @@ impl<'a> Vm<'a> {
               self.globals.remove(&symbol);
               let name = value.get_string(self.interner.clone());
               let message = format!("Undefined variable '{}'.", name);
-              return self.runtime_error(message.as_ref())
+              return self.runtime_error(message.as_ref());
             }
           }
-        },
+        }
         Op::GetGlobal => {
           let value = self.read_constant();
           let symbol = value.as_obj().get_symbol();
@@ -321,46 +371,46 @@ impl<'a> Vm<'a> {
             Some(v) => {
               let result = v.clone();
               self.push(result);
-            },
+            }
             None => {
               let name = value.get_string(self.interner.clone());
               let message = format!("Undefined variable '{}'.", name);
-              return self.runtime_error(message.as_ref())
+              return self.runtime_error(message.as_ref());
             }
           }
-        },
+        }
         Op::SetLocal => {
           let slot: usize = self.read_byte().into();
           let slots = self.current_frame().slots;
           self.stack[1 + slots + slot] = self.peek(0).clone();
-        },
+        }
         Op::GetLocal => {
           let slot: usize = self.read_byte().into();
           let slots = self.current_frame().slots;
           let value = self.stack[1 + slots + slot].clone();
           self.push(value);
-        },
+        }
         Op::Loop => {
           let offset: usize = self.read_short().into();
           self.current_frame().ip -= offset;
-        },
+        }
         Op::Print => {
           let value = self.pop();
           let message = value.get_string(self.interner.clone());
           println!("{}", message);
-        },
+        }
         Op::Return => {
           let result = self.pop();
           self.frame_count -= 1;
 
           if self.frame_count == 0 {
             self.pop();
-            return InterpretResult::Success
+            return InterpretResult::Success;
           }
 
           self.stack_top = self.frames[self.frame_count].slots;
           self.push(result);
-        },
+        }
         _ => panic!("Expected Op"),
       }
     }
